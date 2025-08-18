@@ -1,118 +1,84 @@
-# Chrome Extension: Real-Time Audio Transcription
 
-## Project Overview
-A Chrome extension that captures audio from browser tabs and provides real-time transcription via a user-friendly sidepanel interface.
+# Real-Time Audio Transcription Chrome Extension
 
-## Core Features
-### 1. Sidepanel Interface
-- **Primary Controls:** Start/stop recording buttons with clear visual states
-- **Live Transcription Display:** Transcript updates with auto-scroll
-- **Status Indicators:** Recording state, connection status, error notifications
-- **Meeting Timer:** Session duration display
-- **Export Functionality:** Copy transcript to clipboard or download as text/JSON
+Capture and transcribe audio from any browser tab in real time, with a simple and powerful sidepanel interface.
 
-### 2. Audio Capture System
-- **Tab Audio Capture:** Capture audio from the active browser tab
-- **Multi-source Support (Bonus):**
-  - Capture audio from inactive tabs
-  - Optional microphone input capture
-  - Channel labeling (Tab Audio vs Microphone)
-- **Processing Options:**
-  - Chunked Mode: Transcribe audio segments every 30 seconds
-  - Bonus: 3-second overlap between chunks to avoid word loss
+---
 
-### 3. Transcription Integration
-- **API Selection (in order of preference):**
-  - Google Gemini 2.5 Flash (multi-modal LLM, free credits available)
-  - OpenAI Whisper API
-  - Deepgram API
-  - Fireworks API
+## Table of Contents
+- [Features](#features)
+- [Installation](#installation)
+- [Usage](#usage)
+- [FAQ](#faq)
+- [Support](#support)
+- [License](#license)
 
-### 4. Reliability & Performance
-- **Error Handling:**
-  - Automatic retry logic with exponential backoff
-  - Graceful degradation when APIs are unavailable
-  - User-friendly error messages
-- **Offline Capabilities (Bonus):**
-  - Local audio buffering during connection loss
-  - Automatic sync when connection restored
-  - Queue management for failed requests
-- **Performance Optimization:**
-  - Minimal CPU usage
-  - Memory management for long sessions
-  - Background processing to avoid UI blocking
+---
 
-## Technical Requirements
-- **Browser Compatibility:** Chrome 88+ (getDisplayMedia API)
-- **Permissions:**
-  - Required: tabCapture, activeTab, sidePanel, storage
-  - Optional: microphone, background
-- **Architecture:**
-  - Manifest V3
-  - Service Worker for background/API calls
-  - Minimal content scripts
-  - Sidepanel as main UI
+## Features
+- **Sidepanel Interface:**
+  - Start/stop recording with clear visual feedback
+  - Live transcription display with auto-scroll
+  - Status indicators for recording, connection, and errors
+  - Meeting/session timer
+  - Export transcript (copy or download as text/JSON)
+- **Audio Capture:**
+  - Capture audio from the active browser tab
+  - (Bonus) Multi-tab and microphone support, with channel labeling
+  - Chunked transcription every 30 seconds, with 3-second overlap for accuracy
+- **Transcription APIs:**
+  - Google Gemini 2.5 Flash (recommended)
+  - OpenAI Whisper, Deepgram, Fireworks (fallbacks)
+- **Reliability & Performance:**
+  - Automatic retry logic, user-friendly error messages
+  - Offline buffering and sync (bonus)
+  - Efficient CPU/memory usage for long sessions
 
-## User Experience
-- **Interface Design:** Clean, minimal layout (see TwinMind Chrome extension for reference)
-- **Real-time Updates:** Streaming or refresh every 30 seconds
-- **Timestamp Integration:** Configurable time markers
-- **Visual Feedback:** Clear indicators for recording, processing, errors
-- **Accessibility:** Keyboard navigation, screen reader support
+---
 
-## Workflow
-1. User opens sidepanel
-2. Grants permissions
-3. Clicks start recording
-4. Transcription appears with timestamps
-5. Pause/resume/stop controls
-6. Export options available
+## Installation
 
-## Development Guidelines
-- **Error Handling:**
-  - User-friendly messages
-  - Automatic retry (max 3)
-  - Fallback options
-  - Comprehensive logging
-- **API Integration:**
-  - Recommended: Google Gemini 2.5 Flash
+### From Chrome Web Store
+1. Visit the Chrome Web Store and search for "Real-Time Audio Transcription".
+2. Click "Add to Chrome" and confirm installation.
 
-## Submission Requirements
-1. **Code Repository:**
-   - Public GitHub repo
-   - Setup instructions, API key config
-   - ESLint, proper comments
-   - Demo video (2-3 min)
-2. **Backend Services (if applicable):**
-   - Live backend (Heroku, Vercel, etc.)
-   - Environment variable docs
-   - Health endpoints
-3. **Chrome Extension Package:**
-   - Zip file for Chrome Web Store
-   - Distribution via Drive, Dropbox, or GitHub
-   - Installation guide
-4. **Additional Deliverables:**
-   - Architecture diagram
-   - Performance report
-   - Known limitations
+### Manual Installation
+1. Download or clone this repository.
+2. Open `chrome://extensions` in your browser.
+3. Enable "Developer mode" (top right).
+4. Click "Load unpacked" and select the extension folder.
 
-## Success Criteria
-### Minimum Viable Product (MVP)
-- Captures audio from active tab
-- Updates transcript every 30 seconds
-- Start/stop controls
-- Basic error handling
-- Export/copy transcript
+---
 
-### Excellent Implementation
-- All MVP features plus:
-- Multi-tab audio capture
-- Channel labeling
-- Offline buffering
-- Performance optimization
-- Comprehensive error handling
-- Good UI/UX for tab audio capture
-- 3-second overlap between chunks
+## Usage
+1. Click the extension icon in your Chrome toolbar.
+2. Grant required permissions (audio capture, tab access, etc.) if prompted.
+3. Open the sidepanel and click "Start Recording".
+4. Watch live transcription update every 30 seconds (with timestamps).
+5. Pause, resume, or stop recording as needed.
+6. Export or copy your transcript at any time.
+
+---
+
+## FAQ
+
+**Q: What tabs can I transcribe?**
+A: Any tab playing audio (e.g., Google Meet, YouTube, etc.).
+
+**Q: Is my data private?**
+A: Transcripts are processed securely and stored locally unless exported.
+
+**Q: What if my internet disconnects?**
+A: The extension buffers audio locally and syncs when connection is restored (if enabled).
+
+**Q: Which transcription API is used?**
+A: By default, Google Gemini 2.5 Flash. You can configure others in settings.
+
+---
+
+## Support
+- For issues or feature requests, open a GitHub issue in this repository.
+- For help, contact the maintainer via GitHub.
 
 ---
 

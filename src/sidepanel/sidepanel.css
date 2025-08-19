@@ -1,3 +1,19 @@
+/* Source selector row */
+.source-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.source-row label {
+  font-size: 12px;
+  color: var(--muted, #666);
+}
+
+.source-row select {
+  flex: 1;
+}
 /* Minimal accessible styling for side panel */
 :root {
   --bg: #0f172a;

@@ -1,0 +1,34 @@
+/* Minimal styling for side panel */
+:root {
+  --bg: #0f172a;
+  --fg: #e2e8f0;
+  --accent: #22d3ee;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+}
+
+main {
+  padding: 12px;
+}
+
+button {
+  background: var(--accent);
+  color: #032125;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-right: 8px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button:hover { opacity: 0.9; }

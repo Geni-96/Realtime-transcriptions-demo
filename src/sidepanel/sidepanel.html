@@ -8,11 +8,34 @@
   </head>
   <body>
     <main id="app">
-      <h1>Realtime Transcriptions</h1>
-      <p>Side panel UI scaffold. No logic yet.</p>
-      <button id="start-btn" type="button">Start</button>
-      <button id="stop-btn" type="button">Stop</button>
-      <pre id="log" style="white-space: pre-wrap"></pre>
+      <h1 id="title">Realtime Transcriptions</h1>
+
+      <section class="status-bar" aria-labelledby="status-label" role="status" aria-live="polite">
+        <span id="status-label" class="sr-only">Current status</span>
+        <span class="dot" id="status-dot" aria-hidden="true"></span>
+        <span id="status-text">Stopped</span>
+        <span class="spacer" aria-hidden="true"></span>
+        <span id="timer" aria-label="Elapsed time">00:00</span>
+      </section>
+
+      <section class="controls" aria-label="Transcription controls">
+        <button id="start-btn" type="button" class="primary" aria-label="Start transcription" title="Start transcription">Start</button>
+        <button id="stop-btn" type="button" class="secondary" aria-label="Stop transcription" title="Stop transcription" disabled>Stop</button>
+        <button id="export-btn" type="button" class="ghost" aria-label="Export transcript as text" title="Export transcript as .txt" disabled>Export (.txt)</button>
+      </section>
+
+      <section class="transcript-wrap" aria-labelledby="transcript-heading">
+        <h2 id="transcript-heading" class="sr-only">Transcript</h2>
+        <div
+          id="transcript"
+          class="transcript"
+          role="log"
+          aria-live="polite"
+          aria-relevant="additions text"
+          tabindex="0"
+          aria-label="Transcript area. New text will appear here as it is transcribed."
+        ></div>
+      </section>
     </main>
     <script type="module" src="./sidepanel.js"></script>
   </body>

@@ -1,8 +1,16 @@
-/* Minimal styling for side panel */
+/* Minimal accessible styling for side panel */
 :root {
   --bg: #0f172a;
-  --fg: #e2e8f0;
+  --panel: #111827;
+  --fg: #e5e7eb;
+  --muted: #9ca3af;
   --accent: #22d3ee;
+  --accent-strong: #06b6d4;
+  --danger: #ef4444;
+  --ok: #10b981;
+  --warn: #f59e0b;
+  --border: #1f2937;
+  --focus: #93c5fd;
 }
 
 html, body {
@@ -14,21 +22,79 @@ body {
   background: var(--bg);
   color: var(--fg);
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  line-height: 1.4;
 }
 
-main {
-  padding: 12px;
+#app { padding: 12px; }
+
+h1 { font-size: 16px; margin: 4px 0 12px; font-weight: 700; }
+
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+.status-bar #status-text { color: var(--muted); }
+.status-bar #timer { font-variant-numeric: tabular-nums; color: var(--fg); }
+.status-bar .spacer { flex: 1; }
+.status-bar .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--muted);
+  box-shadow: 0 0 0 2px rgba(255,255,255,0.06) inset;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0;
 }
 
 button {
-  background: var(--accent);
-  color: #032125;
-  border: none;
-  border-radius: 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
   padding: 8px 12px;
-  margin-right: 8px;
+  background: var(--panel);
+  color: var(--fg);
   font-weight: 600;
   cursor: pointer;
 }
+button.primary { background: var(--accent); color: #062329; border-color: transparent; }
+button.secondary { background: #374151; }
+button.ghost { background: transparent; }
+button:hover { filter: brightness(1.05); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
-button:hover { opacity: 0.9; }
+.transcript-wrap {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px;
+  height: 55vh;
+  min-height: 220px;
+}
+.transcript {
+  height: 100%;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+.transcript p { margin: 0 0 6px; }
+.transcript .muted { color: var(--muted); }
+
+.sr-only {
+  position: absolute !important;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0;
+}
+
+/* Status color helpers (toggled via JS) */
+.is-stopped #status-dot { background: var(--muted); }
+.is-listening #status-dot { background: var(--ok); }
+.is-paused #status-dot { background: var(--warn); }

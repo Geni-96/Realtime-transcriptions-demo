@@ -1,6 +1,7 @@
 /* Source selector row */
 .source-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto 1fr;
   gap: 8px;
   align-items: center;
   margin-bottom: 8px;
@@ -12,7 +13,27 @@
 }
 
 .source-row select {
-  flex: 1;
+  min-width: 140px;
+}
+
+/* Wrap buttons and controls on smaller widths */
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.controls > * {
+  flex: 0 1 auto;
+}
+
+@media (max-width: 420px) {
+  .controls {
+    gap: 6px;
+  }
+  .source-row {
+    grid-template-columns: 1fr;
+  }
 }
 /* Minimal accessible styling for side panel */
 :root {

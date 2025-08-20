@@ -7,7 +7,7 @@ chrome.runtime.onInstalled.addListener(() => {
   console.log('[serviceWorker] onInstalled');
 });
 
-import { startTabCapture } from '../audio/audioCapture.js';
+import { startTabCapture, postSegmentToBackground } from '../audio/audioCapture.js';
 
 let running = false; // transcription running state
 let intervalId = null; // simulation interval
@@ -66,11 +66,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           const controller = await startTabCapture({
             targetTabId: tid ?? undefined,
             onChunk: ({ blob, mimeType, source, label }) => {
-              // Forward raw audio chunks to any listeners or a backend (future)
+              // Optional: still broadcast per-chunk for debugging/UX
               blob.arrayBuffer().then((ab) => {
                 const base64 = btoa(String.fromCharCode(...new Uint8Array(ab)));
                 broadcast({ source: 'serviceWorker', type: 'AUDIO_CHUNK', payload: { base64, mimeType, source, label } });
               }).catch((e) => console.warn('[serviceWorker] arrayBuffer failed', e));
+            },
+            onSegment: (segment) => {
+              // Send larger, overlapped 30s segments to backend (future)
+              postSegmentToBackground(segment);
             },
           });
           tabCaptures.set(key, controller);

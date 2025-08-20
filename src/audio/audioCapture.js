@@ -8,7 +8,16 @@
  * - onChunk is called with { blob, mimeType, source, label, meta }
  */
 
-function createRecorder(stream, { timeslice = 250, source = 'unknown', label = source, onChunk }) {
+// Segmenting strategy:
+// - Build segments of segmentMs (default 30s). After the first segment, new
+//   segments include the last overlapMs (default 3s) worth of audio from the
+//   previous segment.
+// - We estimate chunk durations using the MediaRecorder timeslice value. This
+//   avoids decoding; it is sufficient for stable segmentation.
+// - Emitted segments contain arrays of chunks with { blob, ms } metadata; callers
+//   can concatenate or stream chunk-wise to a backend.
+
+function createRecorder(stream, { timeslice = 250, source = 'unknown', label = source, onChunk, onSegment, segmentMs = 30000, overlapMs = 3000 }) {
   const mimeType = (() => {
     const candidates = [
       'audio/webm;codecs=opus',
@@ -31,12 +40,48 @@ function createRecorder(stream, { timeslice = 250, source = 'unknown', label = s
   }
 
   let running = false;
+  // Buffering state
+  let segChunks = []; // [{ blob, ms }]
+  let segDuration = 0; // ms
+  let overlapChunks = []; // carry last overlapMs ms from previous segment
+  let hasPrevSegment = false;
+  let seq = 1;
+
   recorder.ondataavailable = (ev) => {
     if (!ev.data || ev.data.size === 0) return;
-    try {
-      onChunk?.({ blob: ev.data, mimeType: ev.data.type || mimeType || 'application/octet-stream', source, label, meta: {} });
-    } catch (e) {
-      console.warn('[audio] onChunk error', e);
+    const chunkMime = ev.data.type || mimeType || 'application/octet-stream';
+    const ms = timeslice || 250; // estimated
+    const chunk = { blob: ev.data, ms, mimeType: chunkMime };
+
+    // Stream raw chunks if requested (debug/monitoring)
+    try { onChunk?.({ blob: ev.data, mimeType: chunkMime, source, label, meta: { ms } }); } catch (e) { console.warn('[audio] onChunk error', e); }
+
+    // Accumulate into segment
+    segChunks.push(chunk);
+    segDuration += ms;
+
+    const threshold = hasPrevSegment ? Math.max(0, segmentMs - overlapMs) : segmentMs;
+    if (segDuration >= threshold) {
+      // Build segment: include overlap for subsequent segments
+      const segmentChunks = hasPrevSegment ? [...overlapChunks, ...segChunks] : [...segChunks];
+      const totalMs = (hasPrevSegment ? overlapMs : 0) + segDuration;
+      const segment = { chunks: segmentChunks, totalMs, overlapMs: hasPrevSegment ? overlapMs : 0, mimeType: chunkMime, source, label, seq };
+      try { onSegment?.(segment); } catch (e) { console.warn('[audio] onSegment error', e); }
+
+      // Compute new overlap from the tail of the just-emitted segment
+      let carry = [];
+      let acc = 0;
+      for (let i = segmentChunks.length - 1; i >= 0 && acc < overlapMs; i -= 1) {
+        carry.unshift(segmentChunks[i]);
+        acc += segmentChunks[i].ms;
+      }
+      overlapChunks = carry;
+
+      // Reset for next segment
+      segChunks = [];
+      segDuration = 0;
+      hasPrevSegment = true;
+      seq += 1;
     }
   };
   recorder.onstart = () => { running = true; };
@@ -44,8 +89,22 @@ function createRecorder(stream, { timeslice = 250, source = 'unknown', label = s
   recorder.onerror = (e) => console.warn('[audio] recorder error', e);
 
   recorder.start(timeslice);
+
+  function flushPendingSegment() {
+    if (segChunks.length === 0) return;
+    const segmentChunks = hasPrevSegment ? [...overlapChunks, ...segChunks] : [...segChunks];
+    const totalMs = (hasPrevSegment ? overlapMs : 0) + segDuration;
+    const segment = { chunks: segmentChunks, totalMs, overlapMs: hasPrevSegment ? overlapMs : 0, mimeType: mimeType || 'application/octet-stream', source, label, seq };
+    try { onSegment?.(segment); } catch (e) { console.warn('[audio] onSegment error', e); }
+    // compute new overlap (not strictly needed on final flush)
+    segChunks = [];
+    segDuration = 0;
+    hasPrevSegment = true;
+    seq += 1;
+  }
   return {
     stop() {
+      try { flushPendingSegment(); } catch (_) {}
       try { recorder.stop(); } catch (_) {}
       try { stream.getTracks().forEach((t) => t.stop()); } catch (_) {}
     },
@@ -53,6 +112,7 @@ function createRecorder(stream, { timeslice = 250, source = 'unknown', label = s
     stream,
     recorder,
     mimeType: mimeType || 'application/octet-stream',
+    flush: flushPendingSegment,
   };
 }
 
@@ -126,5 +186,26 @@ export function postChunkToBackground({ blob, mimeType, source, label, meta }) {
     });
   };
   reader.readAsArrayBuffer(blob);
+}
+
+// Post a segmented batch to background. Encodes each chunk to base64, preserving ms per chunk.
+export async function postSegmentToBackground(segment) {
+  const { chunks, mimeType, source, label, totalMs, overlapMs, seq } = segment;
+  try {
+    const encoded = await Promise.all(
+      chunks.map(async (c) => {
+        const ab = await c.blob.arrayBuffer();
+        const base64 = btoa(String.fromCharCode(...new Uint8Array(ab)));
+        return { base64, ms: c.ms };
+      }),
+    );
+    chrome.runtime.sendMessage({
+      source: 'audioCapture',
+      type: 'AUDIO_SEGMENT',
+      payload: { chunks: encoded, mimeType, source, label, totalMs, overlapMs, seq },
+    });
+  } catch (e) {
+    console.warn('[audio] postSegmentToBackground failed', e);
+  }
 }
 

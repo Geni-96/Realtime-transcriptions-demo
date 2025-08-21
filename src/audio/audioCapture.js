@@ -117,7 +117,7 @@ function createRecorder(stream, { timeslice = 250, source = 'unknown', label = s
 }
 
 // Background/extension context only (chrome.tabCapture)
-export async function startTabCapture({ onChunk, targetTabId } = {}) {
+export async function startTabCapture({ onChunk, onSegment, targetTabId, timeslice = 250, segmentMs = 30000, overlapMs = 3000 } = {}) {
   if (!chrome?.tabCapture) throw new Error('tabCapture API not available');
   const options = {
     audio: true,
@@ -145,15 +145,15 @@ export async function startTabCapture({ onChunk, targetTabId } = {}) {
   });
 
   const label = typeof targetTabId === 'number' ? `tab:${targetTabId}` : 'tab:active';
-  return createRecorder(stream, { source: 'tab', label, onChunk });
+  return createRecorder(stream, { timeslice, source: 'tab', label, onChunk, onSegment, segmentMs, overlapMs });
 }
 
 // Window/page context only (sidepanel): microphone via getUserMedia
-export async function startMicCapture({ onChunk, deviceId } = {}) {
+export async function startMicCapture({ onChunk, onSegment, deviceId, timeslice = 250, segmentMs = 30000, overlapMs = 3000 } = {}) {
   if (!navigator?.mediaDevices?.getUserMedia) throw new Error('getUserMedia not available');
   const constraints = { audio: deviceId ? { deviceId: { exact: deviceId } } : true, video: false };
   const stream = await navigator.mediaDevices.getUserMedia(constraints);
-  return createRecorder(stream, { source: 'mic', label: 'mic', onChunk });
+  return createRecorder(stream, { timeslice, source: 'mic', label: 'mic', onChunk, onSegment, segmentMs, overlapMs });
 }
 
 // Optional: merge multiple streams into a multichannel stream (best-effort)

@@ -126,6 +126,7 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 }
 .transcript p { margin: 0 0 6px; }
 .transcript .muted { color: var(--muted); }
+.transcript .time { color: var(--muted); font-variant-numeric: tabular-nums; }
 
 .sr-only {
   position: absolute !important;

@@ -30,8 +30,11 @@
         <button id="start-btn" type="button" class="primary" aria-label="Start transcription" title="Start transcription">Start</button>
         <button id="stop-btn" type="button" class="secondary" aria-label="Stop transcription" title="Stop transcription" disabled>Stop</button>
         <button id="export-btn" type="button" class="ghost" aria-label="Export transcript as text" title="Export transcript as .txt" disabled>Export (.txt)</button>
+        <button id="copy-btn" type="button" class="ghost" aria-label="Copy transcript to clipboard" title="Copy transcript to clipboard" disabled>Copy</button>
       </section>
 
+      <!-- SR-only live region for transient announcements (e.g., copy success) -->
+      <div id="sr-alert" class="sr-only" role="status" aria-live="polite"></div>
       
 
       <section class="transcript-wrap" aria-labelledby="transcript-heading">

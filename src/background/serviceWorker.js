@@ -9,7 +9,7 @@ chrome.runtime.onInstalled.addListener(() => {
 
 import { startTabCapture, postSegmentToBackground } from '../audio/audioCapture.js';
 // Developer config (do not commit secrets). Create src/background/config.js from config.example.js
-let GEMINI_CONFIG = { apiKey: null, model: 'gemini-2.5-flash' };
+let GEMINI_CONFIG = { apiKey: 'AIzaSyAi5fFFnBjvmbrLIFI_J-6KanD5mFcx1VI', model: 'gemini-2.5-flash' };
 
 async function loadGeminiConfig() {
   try {
@@ -25,7 +25,6 @@ async function loadGeminiConfig() {
 loadGeminiConfig();
 
 let running = false; // transcription running state
-let intervalId = null; // simulation interval
 let tabCaptures = new Map(); // tabIdOrActive -> capture controller
 let gemini = { apiKey: GEMINI_CONFIG.apiKey || null, model: GEMINI_CONFIG.model || 'gemini-2.5-flash' };
 let segmentQueue = [];
@@ -43,26 +42,7 @@ function setStatus(status) {
   broadcast({ source: 'serviceWorker', type: 'TRANSCRIPTION_STATUS', payload: { status } });
 }
 
-function startSimulation() {
-  const samples = [
-    'This is a realtime transcription demo.',
-    'Speaking clearly improves accuracy.',
-    'Short sentences arrive as chunks.',
-    'Export will save the transcript to a text file.',
-  ];
-  let i = 0;
-  intervalId = setInterval(() => {
-    if (!running) return;
-    const text = samples[i % samples.length];
-    i += 1;
-    broadcast({ source: 'serviceWorker', type: 'TRANSCRIPT_CHUNK', payload: { text } });
-  }, 1500);
-}
-
-function stopSimulation() {
-  if (intervalId) clearInterval(intervalId);
-  intervalId = null;
-}
+// Simulation removed: only real transcripts from Gemini are broadcast.
 
 // Storage is not used for Gemini config anymore; developers provide config.js.
 
@@ -100,7 +80,9 @@ async function processQueue() {
       try {
         setStatus('listening');
         const { text } = await callGeminiTranscribe(seg);
-        broadcast({ source: 'serviceWorker', type: 'TRANSCRIPT_CHUNK', payload: { text } });
+        // Use now as receipt timestamp; could be improved by computing start time from seq/segment durations.
+        const ts = Date.now();
+        broadcast({ source: 'serviceWorker', type: 'TRANSCRIPT_CHUNK', payload: { text, ts } });
       } catch (e) {
         console.warn('[serviceWorker] Gemini STT failed', e);
         broadcast({ source: 'serviceWorker', type: 'TRANSCRIPTION_ERROR', payload: { message: 'Transcription error', detail: String(e?.message || e) } });
@@ -119,7 +101,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!running) {
       running = true;
       setStatus('listening');
-      startSimulation(); // keep demo transcript flowing
     }
     // Start tab capture(s) if requested
     if (payload?.source === 'tab' || payload?.source === 'tab+mic' || payload?.source === 'multi-tab') {
@@ -153,7 +134,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   } else if (type === 'STOP_TRANSCRIPTION') {
     if (running) {
       running = false;
-      stopSimulation();
       setStatus('stopped');
     }
     // Stop all tab captures

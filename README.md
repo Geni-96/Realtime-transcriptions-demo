@@ -18,10 +18,10 @@ Capture and transcribe audio from any browser tab in real time, with a simple an
 ## Features
 - **Sidepanel Interface:**
   - Start/stop recording with clear visual feedback
-  - Live transcription display with auto-scroll
+  - Live transcription display with auto-scroll and per-chunk timestamps
   - Status indicators for recording, connection, and errors
   - Meeting/session timer
-  - Export transcript (copy or download as text/JSON)
+  - Export transcript (download .txt) and Copy to Clipboard
 - **Audio Capture:**
   - Capture audio from the active browser tab
   - (Bonus) Multi-tab and microphone support, with channel labeling
@@ -54,9 +54,9 @@ Capture and transcribe audio from any browser tab in real time, with a simple an
 1. Click the extension icon in your Chrome toolbar.
 2. Grant required permissions (audio capture, tab access, etc.) if prompted.
 3. Open the sidepanel and click "Start Recording".
-4. Watch live transcription update every 30 seconds (with timestamps).
+4. Watch live transcription update every ~30 seconds as chunks (each line prefixed with a timestamp).
 5. Pause, resume, or stop recording as needed.
-6. Export or copy your transcript at any time.
+6. Export (.txt) or copy the transcript at any time. The transcript auto-scrolls to the latest entry.
 
 ---
 
@@ -72,7 +72,7 @@ A: Transcripts are processed securely and stored locally unless exported.
 A: The extension buffers audio locally and syncs when connection is restored (if enabled).
 
 **Q: Which transcription API is used?**
-A: By default, Google Gemini 2.5 Flash. You can configure others in settings.
+A: Google Gemini 2.5 Flash. Configure your API key and model in `src/background/config.js` (use `config.example.js` as a guide; do not commit secrets).
 
 ---
 

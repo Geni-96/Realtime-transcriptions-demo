@@ -1,12 +1,12 @@
 // Side panel UI logic
-// Accessible controls, status, timer, transcript stream, export .txt
+// Accessible controls, status, timer, transcript stream (real-time), export & copy.
 import { startMicCapture, postChunkToBackground, postSegmentToBackground } from '../audio/audioCapture.js';
 
 const state = {
   running: false,
   startTs: null,
   timerInterval: null,
-  transcript: [],
+  transcript: [], // [{ text, tsISO }]
   source: 'tab',
   micCapture: null,
 };
@@ -54,13 +54,27 @@ function stopTimer() {
   timerEl.textContent = '00:00';
 }
 
-function appendTranscript(text) {
-  if (!text) return;
-  state.transcript.push(text);
+function renderTranscriptChunk({ text, tsISO }) {
   const container = document.getElementById('transcript');
   const p = document.createElement('p');
-  p.textContent = text;
+  const time = document.createElement('span');
+  time.className = 'time';
+  const dt = tsISO ? new Date(tsISO) : new Date();
+  time.textContent = `[${dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}] `;
+  time.setAttribute('aria-hidden', 'true');
+  const textNode = document.createTextNode(text);
+  p.appendChild(time);
+  p.appendChild(textNode);
   container.appendChild(p);
+}
+
+function appendTranscript(text, ts = Date.now()) {
+  if (!text) return;
+  const tsISO = new Date(ts).toISOString();
+  state.transcript.push({ text, tsISO });
+  renderTranscriptChunk({ text, tsISO });
+  // Auto-scroll to latest
+  const container = document.getElementById('transcript');
   container.scrollTop = container.scrollHeight;
 }
 
@@ -71,7 +85,12 @@ function clearTranscript() {
 }
 
 function exportTxt() {
-  const blob = new Blob([state.transcript.join('\n')], { type: 'text/plain;charset=utf-8' });
+  const lines = state.transcript.map((c) => {
+    const t = new Date(c.tsISO);
+    const stamp = t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    return `[${stamp}] ${c.text}`;
+  });
+  const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -81,6 +100,37 @@ function exportTxt() {
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+async function copyTranscript() {
+  const text = state.transcript
+    .map((c) => {
+      const t = new Date(c.tsISO);
+      const stamp = t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      return `[${stamp}] ${c.text}`;
+    })
+    .join('\n');
+  try {
+    await navigator.clipboard.writeText(text);
+    announce('Transcript copied to clipboard');
+  } catch (e) {
+    // Fallback: create a temporary textarea
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    if (ok) announce('Transcript copied to clipboard');
+  }
+}
+
+function announce(msg) {
+  const sr = document.getElementById('sr-alert');
+  if (!sr) return;
+  sr.textContent = '';
+  // force change for screen readers
+  setTimeout(() => { sr.textContent = msg; }, 30);
 }
 
 async function sendCommand(command, payload) {
@@ -97,9 +147,12 @@ function setButtons({ running }) {
   const startBtn = document.getElementById('start-btn');
   const stopBtn = document.getElementById('stop-btn');
   const exportBtn = document.getElementById('export-btn');
+  const copyBtn = document.getElementById('copy-btn');
   startBtn.disabled = running;
   stopBtn.disabled = !running;
-  exportBtn.disabled = state.transcript.length === 0;
+  const hasText = state.transcript.length > 0;
+  exportBtn.disabled = !hasText;
+  if (copyBtn) copyBtn.disabled = !hasText;
 }
 
 async function requestMicPermission() {
@@ -128,7 +181,7 @@ async function onStart() {
         onSegment: (segment) => postSegmentToBackground(segment),
       });
     } catch (e) {
-      appendTranscript('Microphone capture failed. Check permissions.');
+  appendTranscript('Microphone capture failed. Check permissions.');
       console.warn(e);
     }
     sendCommand('START_TRANSCRIPTION', { source: 'mic' });
@@ -163,8 +216,13 @@ function handleIncomingMessage(message, _sender, _sendResponse) {
   if (!message || message.source === 'sidepanel') return;
   switch (message.type) {
     case 'TRANSCRIPT_CHUNK':
-      appendTranscript(message.payload?.text || '');
+      // Accept only real chunks coming from background (Gemini results)
+      appendTranscript(message.payload?.text || '', message.payload?.ts || Date.now());
       setButtons({ running: state.running });
+      break;
+    case 'TRANSCRIPTION_ERROR':
+      appendTranscript(`Error: ${message.payload?.message || 'Transcription error'}`);
+      announce('Transcription error');
       break;
     case 'TRANSCRIPTION_STATUS':
       if (message.payload?.status === 'paused') setStatus('paused');
@@ -183,11 +241,13 @@ window.addEventListener('DOMContentLoaded', async () => {
   const startBtn = document.getElementById('start-btn');
   const stopBtn = document.getElementById('stop-btn');
   const exportBtn = document.getElementById('export-btn');
+  const copyBtn = document.getElementById('copy-btn');
   const sourceSelect = document.getElementById('source-select');
 
   startBtn.addEventListener('click', onStart);
   stopBtn.addEventListener('click', onStop);
   exportBtn.addEventListener('click', exportTxt);
+  copyBtn?.addEventListener('click', copyTranscript);
 
   sourceSelect.addEventListener('change', (e) => {
     state.source = e.target.value;

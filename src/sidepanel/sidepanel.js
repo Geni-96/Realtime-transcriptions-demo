@@ -1,6 +1,6 @@
 // Side panel UI logic
 // Accessible controls, status, timer, transcript stream, export .txt
-import { startMicCapture, postChunkToBackground } from '../audio/audioCapture.js';
+import { startMicCapture, postChunkToBackground, postSegmentToBackground } from '../audio/audioCapture.js';
 
 const state = {
   running: false,
@@ -123,7 +123,10 @@ async function onStart() {
     try {
       const ok = await requestMicPermission();
       if (!ok) throw new Error('Microphone permission not granted');
-      state.micCapture = await startMicCapture({ onChunk: (chunk) => postChunkToBackground(chunk) });
+      state.micCapture = await startMicCapture({
+        onChunk: (chunk) => postChunkToBackground(chunk),
+        onSegment: (segment) => postSegmentToBackground(segment),
+      });
     } catch (e) {
       appendTranscript('Microphone capture failed. Check permissions.');
       console.warn(e);
@@ -135,7 +138,10 @@ async function onStart() {
     try {
       const ok = await requestMicPermission();
       if (!ok) throw new Error('Microphone permission not granted');
-      state.micCapture = await startMicCapture({ onChunk: (chunk) => postChunkToBackground(chunk) });
+      state.micCapture = await startMicCapture({
+        onChunk: (chunk) => postChunkToBackground(chunk),
+        onSegment: (segment) => postSegmentToBackground(segment),
+      });
     } catch (e) {
       appendTranscript('Microphone capture failed. Proceeding with Tab only.');
     }
@@ -170,7 +176,7 @@ function handleIncomingMessage(message, _sender, _sendResponse) {
   }
 }
 
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('app')?.classList.add('is-stopped');
   setButtons({ running: false });
 
@@ -178,6 +184,10 @@ window.addEventListener('DOMContentLoaded', () => {
   const stopBtn = document.getElementById('stop-btn');
   const exportBtn = document.getElementById('export-btn');
   const sourceSelect = document.getElementById('source-select');
+  const apiKeyInput = document.getElementById('gemini-api-key');
+  const modelInput = document.getElementById('gemini-model');
+  const saveBtn = document.getElementById('save-settings');
+  const clearBtn = document.getElementById('clear-key');
 
   startBtn.addEventListener('click', onStart);
   stopBtn.addEventListener('click', onStop);
@@ -185,6 +195,30 @@ window.addEventListener('DOMContentLoaded', () => {
 
   sourceSelect.addEventListener('change', (e) => {
     state.source = e.target.value;
+  });
+
+  // Load settings
+  try {
+    const { geminiApiKey, geminiModel } = await chrome.storage.local.get(['geminiApiKey', 'geminiModel']);
+    if (geminiApiKey) apiKeyInput.value = geminiApiKey;
+    if (geminiModel) modelInput.value = geminiModel;
+  } catch (_) {}
+
+  saveBtn?.addEventListener('click', async () => {
+    try {
+      await chrome.storage.local.set({ geminiApiKey: apiKeyInput.value.trim(), geminiModel: modelInput.value.trim() || 'gemini-1.5-flash' });
+      appendTranscript('Settings saved.');
+    } catch (e) {
+      appendTranscript('Failed to save settings.');
+    }
+  });
+
+  clearBtn?.addEventListener('click', async () => {
+    try {
+      await chrome.storage.local.remove(['geminiApiKey']);
+      apiKeyInput.value = '';
+      appendTranscript('API key cleared.');
+    } catch (e) {}
   });
 
   document.querySelector('.controls')?.addEventListener('keydown', (e) => {

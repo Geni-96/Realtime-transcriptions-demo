@@ -32,6 +32,22 @@
         <button id="export-btn" type="button" class="ghost" aria-label="Export transcript as text" title="Export transcript as .txt" disabled>Export (.txt)</button>
       </section>
 
+      <section class="settings" aria-label="Settings">
+        <details>
+          <summary>Transcription Settings</summary>
+          <div class="settings-grid">
+            <label for="gemini-api-key">Gemini API Key</label>
+            <input id="gemini-api-key" type="password" autocomplete="off" placeholder="Enter API key" />
+            <label for="gemini-model">Model</label>
+            <input id="gemini-model" type="text" value="gemini-1.5-flash" />
+            <div class="settings-actions">
+              <button id="save-settings" type="button" class="secondary">Save</button>
+              <button id="clear-key" type="button" class="ghost">Clear Key</button>
+            </div>
+          </div>
+        </details>
+      </section>
+
       <section class="transcript-wrap" aria-labelledby="transcript-heading">
         <h2 id="transcript-heading" class="sr-only">Transcript</h2>
         <div

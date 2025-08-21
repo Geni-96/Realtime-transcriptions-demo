@@ -1,5 +1,5 @@
 // Background service worker (MV3)
-// Handles control messages, starts tab audio capture, and simulates transcript events.
+// Handles control messages, starts tab audio capture, and integrates with Gemini for STT.
 
 console.log('[serviceWorker] loaded');
 
@@ -12,6 +12,9 @@ import { startTabCapture, postSegmentToBackground } from '../audio/audioCapture.
 let running = false; // transcription running state
 let intervalId = null; // simulation interval
 let tabCaptures = new Map(); // tabIdOrActive -> capture controller
+let gemini = { apiKey: null, model: 'gemini-1.5-flash' }; // model configurable, default to widely available
+let segmentQueue = [];
+let processing = false;
 
 function broadcast(message) {
   try {
@@ -44,6 +47,66 @@ function startSimulation() {
 function stopSimulation() {
   if (intervalId) clearInterval(intervalId);
   intervalId = null;
+}
+
+// Load Gemini config from storage
+async function loadGeminiConfig() {
+  try {
+    const { geminiApiKey, geminiModel } = await chrome.storage.local.get(['geminiApiKey', 'geminiModel']);
+    gemini.apiKey = geminiApiKey || null;
+    if (geminiModel && typeof geminiModel === 'string') gemini.model = geminiModel;
+  } catch (_) {}
+}
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local') return;
+  if (changes.geminiApiKey) gemini.apiKey = changes.geminiApiKey.newValue || null;
+  if (changes.geminiModel) gemini.model = changes.geminiModel.newValue || gemini.model;
+});
+
+// Call Gemini GenerateContent with audio parts and return text
+async function callGeminiTranscribe({ chunks, mimeType, label, seq }) {
+  if (!gemini.apiKey) throw new Error('Gemini API key not set');
+  const model = gemini.model || 'gemini-1.5-flash';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(gemini.apiKey)}`;
+  const parts = [
+    { text: 'Transcribe the following audio into plain text. Respond with transcript only.' },
+    ...chunks.map((c) => ({ inline_data: { mime_type: mimeType || 'audio/webm', data: c.base64 } })),
+  ];
+  const body = { contents: [{ role: 'user', parts }] };
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    const txt = await resp.text().catch(() => String(resp.status));
+    throw new Error(`Gemini error ${resp.status}: ${txt}`);
+  }
+  const data = await resp.json();
+  const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join(' ').trim();
+  if (!text) throw new Error('No transcript returned');
+  return { text, label, seq };
+}
+
+async function processQueue() {
+  if (processing) return;
+  processing = true;
+  try {
+    while (segmentQueue.length > 0 && running) {
+      const seg = segmentQueue.shift();
+      try {
+        setStatus('listening');
+        const { text } = await callGeminiTranscribe(seg);
+        broadcast({ source: 'serviceWorker', type: 'TRANSCRIPT_CHUNK', payload: { text } });
+      } catch (e) {
+        console.warn('[serviceWorker] Gemini STT failed', e);
+        broadcast({ source: 'serviceWorker', type: 'TRANSCRIPTION_ERROR', payload: { message: 'Transcription error', detail: String(e?.message || e) } });
+      }
+    }
+  } finally {
+    processing = false;
+  }
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -104,5 +167,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     // Optionally, broadcast to other UIs for debugging.
     // broadcast({ source: 'serviceWorker', type: 'AUDIO_CHUNK', payload });
     sendResponse?.({ ok: true });
+  } else if (type === 'AUDIO_SEGMENT' && message.source === 'audioCapture') {
+    // Enqueue for transcription; structure: { chunks: [{base64, ms}], mimeType, source, label, totalMs, overlapMs, seq }
+    if (!running) { sendResponse?.({ ok: false, reason: 'not-running' }); return; }
+    segmentQueue.push(payload);
+    processQueue();
+    sendResponse?.({ ok: true });
   }
 });
+
+// Initialize config on service worker load
+loadGeminiConfig();

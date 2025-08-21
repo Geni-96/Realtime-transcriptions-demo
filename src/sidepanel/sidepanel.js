@@ -184,10 +184,6 @@ window.addEventListener('DOMContentLoaded', async () => {
   const stopBtn = document.getElementById('stop-btn');
   const exportBtn = document.getElementById('export-btn');
   const sourceSelect = document.getElementById('source-select');
-  const apiKeyInput = document.getElementById('gemini-api-key');
-  const modelInput = document.getElementById('gemini-model');
-  const saveBtn = document.getElementById('save-settings');
-  const clearBtn = document.getElementById('clear-key');
 
   startBtn.addEventListener('click', onStart);
   stopBtn.addEventListener('click', onStop);
@@ -197,29 +193,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     state.source = e.target.value;
   });
 
-  // Load settings
-  try {
-    const { geminiApiKey, geminiModel } = await chrome.storage.local.get(['geminiApiKey', 'geminiModel']);
-    if (geminiApiKey) apiKeyInput.value = geminiApiKey;
-    if (geminiModel) modelInput.value = geminiModel;
-  } catch (_) {}
-
-  saveBtn?.addEventListener('click', async () => {
-    try {
-      await chrome.storage.local.set({ geminiApiKey: apiKeyInput.value.trim(), geminiModel: modelInput.value.trim() || 'gemini-1.5-flash' });
-      appendTranscript('Settings saved.');
-    } catch (e) {
-      appendTranscript('Failed to save settings.');
-    }
-  });
-
-  clearBtn?.addEventListener('click', async () => {
-    try {
-      await chrome.storage.local.remove(['geminiApiKey']);
-      apiKeyInput.value = '';
-      appendTranscript('API key cleared.');
-    } catch (e) {}
-  });
+  // Settings panel removed. API key/model provided by developers.
 
   document.querySelector('.controls')?.addEventListener('keydown', (e) => {
     if (e.key === ' ' || e.key === 'Enter') {

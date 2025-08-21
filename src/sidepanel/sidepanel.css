@@ -36,21 +36,7 @@
   }
 }
 
-/* Settings */
-.settings details {
-  margin-top: 10px;
-}
-.settings-grid {
-  display: grid;
-  grid-template-columns: 160px 1fr;
-  gap: 8px;
-  padding: 8px;
-}
-.settings-actions {
-  grid-column: 1 / -1;
-  display: flex;
-  gap: 8px;
-}
+/* Settings removed: API key is configured by developers via env config */
 /* Minimal accessible styling for side panel */
 :root {
   --bg: #0f172a;

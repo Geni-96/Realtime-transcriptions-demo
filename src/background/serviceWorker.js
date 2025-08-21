@@ -8,11 +8,26 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 import { startTabCapture, postSegmentToBackground } from '../audio/audioCapture.js';
+// Developer config (do not commit secrets). Create src/background/config.js from config.example.js
+let GEMINI_CONFIG = { apiKey: null, model: 'gemini-2.5-flash' };
+
+async function loadGeminiConfig() {
+  try {
+    // eslint-disable-next-line import/no-unresolved
+    // @ts-ignore
+    const mod = await import('./config.js');
+    if (mod?.GEMINI_CONFIG) GEMINI_CONFIG = mod.GEMINI_CONFIG;
+  } catch (e) {
+    console.warn('[serviceWorker] No config.js found. Using defaults from example.');
+  }
+}
+
+loadGeminiConfig();
 
 let running = false; // transcription running state
 let intervalId = null; // simulation interval
 let tabCaptures = new Map(); // tabIdOrActive -> capture controller
-let gemini = { apiKey: null, model: 'gemini-1.5-flash' }; // model configurable, default to widely available
+let gemini = { apiKey: GEMINI_CONFIG.apiKey || null, model: GEMINI_CONFIG.model || 'gemini-2.5-flash' };
 let segmentQueue = [];
 let processing = false;
 
@@ -49,25 +64,12 @@ function stopSimulation() {
   intervalId = null;
 }
 
-// Load Gemini config from storage
-async function loadGeminiConfig() {
-  try {
-    const { geminiApiKey, geminiModel } = await chrome.storage.local.get(['geminiApiKey', 'geminiModel']);
-    gemini.apiKey = geminiApiKey || null;
-    if (geminiModel && typeof geminiModel === 'string') gemini.model = geminiModel;
-  } catch (_) {}
-}
-
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== 'local') return;
-  if (changes.geminiApiKey) gemini.apiKey = changes.geminiApiKey.newValue || null;
-  if (changes.geminiModel) gemini.model = changes.geminiModel.newValue || gemini.model;
-});
+// Storage is not used for Gemini config anymore; developers provide config.js.
 
 // Call Gemini GenerateContent with audio parts and return text
 async function callGeminiTranscribe({ chunks, mimeType, label, seq }) {
   if (!gemini.apiKey) throw new Error('Gemini API key not set');
-  const model = gemini.model || 'gemini-1.5-flash';
+  const model = gemini.model || 'gemini-2.5-flash';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(gemini.apiKey)}`;
   const parts = [
     { text: 'Transcribe the following audio into plain text. Respond with transcript only.' },
@@ -176,5 +178,4 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 });
 
-// Initialize config on service worker load
-loadGeminiConfig();
+// No dynamic config load; using static developer config.

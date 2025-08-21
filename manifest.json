@@ -13,6 +13,9 @@
     "service_worker": "src/background/serviceWorker.js",
     "type": "module"
   },
+  "host_permissions": [
+    "https://generativelanguage.googleapis.com/*"
+  ],
   "side_panel": {
     "default_path": "src/sidepanel/sidepanel.html"
   },

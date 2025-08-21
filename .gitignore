@@ -24,3 +24,6 @@ Thumbs.db
 *.local
 .env
 .env.*
+
+# Secrets for background Gemini
+src/background/config.js

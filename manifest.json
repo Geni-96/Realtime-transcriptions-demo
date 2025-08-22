@@ -4,17 +4,19 @@
   "description": "Chrome extension scaffold for real-time audio transcription (JavaScript).",
   "version": "0.1.0",
   "permissions": [
-    "tabCapture",
-    "activeTab",
-    "sidePanel",
-    "storage"
+  "tabCapture",
+  "tabs",
+  "activeTab",
+  "sidePanel",
+  "storage"
   ],
   "background": {
     "service_worker": "src/background/serviceWorker.js",
     "type": "module"
   },
   "host_permissions": [
-    "https://generativelanguage.googleapis.com/*"
+  "https://generativelanguage.googleapis.com/*",
+  "<all_urls>"
   ],
   "side_panel": {
     "default_path": "src/sidepanel/sidepanel.html"

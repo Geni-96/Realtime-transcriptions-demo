@@ -122,9 +122,6 @@ export async function startTabCapture({ onChunk, onSegment, targetTabId, timesli
   const options = {
     audio: true,
     video: false,
-    // Some Chrome versions support targetTabId for non-active tabs; ignore if unsupported
-    // @ts-ignore
-    targetTabId,
   };
   const stream = await new Promise((resolve, reject) => {
     try {
@@ -172,6 +169,15 @@ export async function startMergedCapture({ streams, labels = [], onChunk, timesl
 
   const label = labels.length ? `merged:${labels.join('+')}` : 'merged';
   return createRecorder(dest.stream, { timeslice, source: 'merged', label, onChunk });
+}
+
+// Fallback: capture shared tab/system audio via getDisplayMedia (user picks target)
+export async function startShareAudioCapture({ onChunk, onSegment, timeslice = 250, segmentMs = 30000, overlapMs = 3000 } = {}) {
+  if (!navigator?.mediaDevices?.getDisplayMedia) throw new Error('getDisplayMedia not available');
+  // Most browsers will prompt the user to choose a tab/window/screen and optionally share audio
+  const stream = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: false });
+  // On some platforms the returned stream may not include audio if the user didn’t check "Share audio"
+  return createRecorder(stream, { timeslice, source: 'share', label: 'share', onChunk, onSegment, segmentMs, overlapMs });
 }
 
 // Utilities to send audio to background for transcription

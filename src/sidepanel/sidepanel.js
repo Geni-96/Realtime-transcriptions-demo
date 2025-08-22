@@ -1,6 +1,6 @@
 // Side panel UI logic
 // Accessible controls, status, timer, transcript stream (real-time), export & copy.
-import { startMicCapture, postChunkToBackground, postSegmentToBackground } from '../audio/audioCapture.js';
+import { startMicCapture, startTabCapture, startShareAudioCapture, postChunkToBackground, postSegmentToBackground } from '../audio/audioCapture.js';
 
 const state = {
   running: false,
@@ -9,6 +9,9 @@ const state = {
   transcript: [], // [{ text, tsISO }]
   source: 'tab',
   micCapture: null,
+  activityTimer: null,
+  sawAudio: false,
+  tabCapture: null,
 };
 
 function setStatus(status) {
@@ -72,10 +75,14 @@ function appendTranscript(text, ts = Date.now()) {
   if (!text) return;
   const tsISO = new Date(ts).toISOString();
   state.transcript.push({ text, tsISO });
-  renderTranscriptChunk({ text, tsISO });
-  // Auto-scroll to latest
-  const container = document.getElementById('transcript');
-  container.scrollTop = container.scrollHeight;
+  try {
+    renderTranscriptChunk({ text, tsISO });
+    // Auto-scroll to latest
+    const container = document.getElementById('transcript');
+    if (container) container.scrollTop = container.scrollHeight;
+  } catch (e) {
+    console.warn('appendTranscript render failed', e);
+  }
 }
 
 function clearTranscript() {
@@ -172,33 +179,113 @@ async function onStart() {
   startTimer();
   setButtons({ running: true });
   const source = state.source;
+  state.sawAudio = false;
+  if (state.activityTimer) { clearTimeout(state.activityTimer); state.activityTimer = null; }
+  // If no audio activity within 12s, surface a helpful hint
+  state.activityTimer = setTimeout(() => {
+    if (!state.sawAudio) {
+      const hint = source === 'mic'
+        ? 'No microphone audio detected yet. Check input device and OS permissions.'
+        : 'No tab audio detected yet. Make sure the active tab is playing audio.';
+      appendTranscript(hint);
+      announce('No audio detected yet');
+    }
+  }, 12000);
   if (source === 'mic') {
     try {
       const ok = await requestMicPermission();
       if (!ok) throw new Error('Microphone permission not granted');
       state.micCapture = await startMicCapture({
-        onChunk: (chunk) => postChunkToBackground(chunk),
+  onChunk: (chunk) => { state.sawAudio = true; postChunkToBackground(chunk); },
         onSegment: (segment) => postSegmentToBackground(segment),
       });
     } catch (e) {
   appendTranscript('Microphone capture failed. Check permissions.');
+  announce('Microphone capture failed');
       console.warn(e);
     }
-    sendCommand('START_TRANSCRIPTION', { source: 'mic' });
+    const resp = await sendCommand('START_TRANSCRIPTION', { source: 'mic' });
+    if (!resp?.ok) {
+      appendTranscript('Could not contact background. Try reloading the extension.');
+    }
   } else if (source === 'tab') {
-    sendCommand('START_TRANSCRIPTION', { source: 'tab' });
+    // Start tab capture locally (MediaRecorder is not available in service worker)
+    try {
+      // Determine the active tab ID for the current window
+      const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const targetTabId = active?.id;
+      const url = active?.url || '';
+      // Disallow Chrome internal and other non-capturable schemes
+      if (!/^https?:/i.test(url)) {
+        appendTranscript('Cannot capture this page (chrome/internal page). Switch to a regular website tab (e.g., a YouTube video) and try again.');
+        state.running = false;
+        setStatus('stopped');
+        stopTimer();
+        setButtons({ running: false });
+        return;
+      }
+      // Ensure we have per-origin permission if the extension is set to "on click" access
+      const origin = new URL(url).origin + '/*';
+      try {
+        const granted = await chrome.permissions.request({ origins: [origin] });
+        if (!granted) {
+          appendTranscript('Permission to access this site was not granted. Click the extension icon and allow “Always allow on this site”, then try again.');
+          state.running = false; setStatus('stopped'); stopTimer(); setButtons({ running: false });
+          return;
+        }
+      } catch (_) {
+        // ignore; some setups auto-grant due to host_permissions
+      }
+      if (!targetTabId) throw new Error('No active tab found in current window');
+      state.tabCapture = await startTabCapture({
+        targetTabId,
+        onChunk: (chunk) => { state.sawAudio = true; postChunkToBackground(chunk); },
+        onSegment: (segment) => postSegmentToBackground(segment),
+      });
+    } catch (e) {
+      appendTranscript(`Tab capture failed. ${e?.message || e}. Ensure the side panel is opened from the same window as the target tab and that the tab is active.`);
+      console.warn(e);
+    }
+    const resp = await sendCommand('START_TRANSCRIPTION', { source: 'tab' });
+    if (!resp?.ok) {
+      appendTranscript('Could not contact background. Try reloading the extension.');
+    } else {
+      appendTranscript('Capturing audio from the active tab. Ensure it is playing.');
+    }
   } else if (source === 'tab+mic') {
     try {
       const ok = await requestMicPermission();
       if (!ok) throw new Error('Microphone permission not granted');
       state.micCapture = await startMicCapture({
-        onChunk: (chunk) => postChunkToBackground(chunk),
+        onChunk: (chunk) => { state.sawAudio = true; postChunkToBackground(chunk); },
         onSegment: (segment) => postSegmentToBackground(segment),
       });
     } catch (e) {
       appendTranscript('Microphone capture failed. Proceeding with Tab only.');
     }
+    try {
+      state.tabCapture = await startTabCapture({
+        onChunk: (chunk) => { state.sawAudio = true; postChunkToBackground(chunk); },
+        onSegment: (segment) => postSegmentToBackground(segment),
+      });
+    } catch (e) {
+      appendTranscript('Tab capture failed. Continuing with microphone only.');
+    }
     chrome.runtime.sendMessage({ source: 'sidepanel', type: 'START_TRANSCRIPTION', payload: { source: 'tab+mic' } });
+  } else if (source === 'share') {
+    try {
+      const share = await startShareAudioCapture({
+        onChunk: (chunk) => { state.sawAudio = true; postChunkToBackground(chunk); },
+        onSegment: (segment) => postSegmentToBackground(segment),
+      });
+      state.tabCapture = share; // reuse tabCapture slot for lifecycle
+      appendTranscript('Shared audio capture started. If you do not hear/see audio, ensure you checked "Share audio" in the prompt.');
+    } catch (e) {
+      appendTranscript('Share audio prompt failed or was denied.');
+      console.warn(e);
+    }
+    const resp = await sendCommand('START_TRANSCRIPTION', { source: 'share' });
+    if (!resp?.ok) appendTranscript('Could not contact background. Try reloading the extension.');
   }
 }
 
@@ -209,7 +296,9 @@ function onStop() {
   setButtons({ running: false });
   sendCommand('STOP_TRANSCRIPTION');
   try { state.micCapture?.stop(); } catch (_) {}
+  try { state.tabCapture?.stop(); } catch (_) {}
   state.micCapture = null;
+  state.tabCapture = null;
 }
 
 function handleIncomingMessage(message, _sender, _sendResponse) {
@@ -219,6 +308,10 @@ function handleIncomingMessage(message, _sender, _sendResponse) {
       // Accept only real chunks coming from background (Gemini results)
       appendTranscript(message.payload?.text || '', message.payload?.ts || Date.now());
       setButtons({ running: state.running });
+      break;
+    case 'AUDIO_CHUNK':
+      // Lightweight signal that audio is flowing
+      state.sawAudio = true;
       break;
     case 'TRANSCRIPTION_ERROR':
       appendTranscript(`Error: ${message.payload?.message || 'Transcription error'}`);

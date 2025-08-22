@@ -5,6 +5,10 @@ console.log('[serviceWorker] loaded');
 
 chrome.runtime.onInstalled.addListener(() => {
   console.log('[serviceWorker] onInstalled');
+  try {
+    // Make the toolbar icon open our side panel when clicked
+    chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+  } catch (_) {}
 });
 
 import { startTabCapture, postSegmentToBackground } from '../audio/audioCapture.js';
@@ -29,6 +33,48 @@ let tabCaptures = new Map(); // tabIdOrActive -> capture controller
 let gemini = { apiKey: GEMINI_CONFIG.apiKey || null, model: GEMINI_CONFIG.model || 'gemini-2.5-flash' };
 let segmentQueue = [];
 let processing = false;
+
+// Side Panel visibility control: enable on http/https pages; disable on chrome/internal pages
+function isHttpUrl(url) {
+  return typeof url === 'string' && /^https?:\/\//i.test(url);
+}
+
+async function updateSidePanelForTab(tab) {
+  if (!tab || typeof tab.id !== 'number') return;
+  const enable = !!isHttpUrl(tab.url);
+  try {
+    await chrome.sidePanel.setOptions({
+      tabId: tab.id,
+      enabled: enable,
+      path: 'src/sidepanel/sidepanel.html',
+    });
+  } catch (e) {
+    // setOptions can throw if the tab is closing; ignore
+  }
+}
+
+async function refreshAllTabsSidePanel() {
+  try {
+    const tabs = await chrome.tabs.query({});
+    await Promise.all(tabs.map(updateSidePanelForTab));
+  } catch (e) {
+    console.warn('[serviceWorker] refreshAllTabsSidePanel error', e);
+  }
+}
+
+// Initialize side panel enablement on startup
+refreshAllTabsSidePanel();
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (!tab) return;
+  if ('url' in changeInfo || changeInfo.status === 'complete') {
+    updateSidePanelForTab(tab);
+  }
+});
+
+chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+  try { const tab = await chrome.tabs.get(tabId); updateSidePanelForTab(tab); } catch (_) {}
+});
 
 function broadcast(message) {
   try {

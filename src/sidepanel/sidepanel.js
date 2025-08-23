@@ -165,7 +165,7 @@ function setButtons({ running }) {
 async function requestMicPermission() {
   try {
     const tmp = await navigator.mediaDevices.getUserMedia({ audio: true });
-    tmp.getTracks().forEach((t) => t.stop());
+    // tmp.getTracks().forEach((t) => t.stop());
     return true;
   } catch (e) {
     appendTranscript('Microphone permission denied or unavailable.');
@@ -182,19 +182,19 @@ async function onStart() {
   state.sawAudio = false;
   if (state.activityTimer) { clearTimeout(state.activityTimer); state.activityTimer = null; }
   // If no audio activity within 12s, surface a helpful hint
-  state.activityTimer = setTimeout(() => {
-    if (!state.sawAudio) {
-      const hint = source === 'mic'
-        ? 'No microphone audio detected yet. Check input device and OS permissions.'
-        : 'No tab audio detected yet. Make sure the active tab is playing audio.';
-      appendTranscript(hint);
-      announce('No audio detected yet');
-    }
-  }, 12000);
+  // state.activityTimer = setTimeout(() => {
+  //   if (!state.sawAudio) {
+  //     const hint = source === 'mic'
+  //       ? 'No microphone audio detected yet. Check input device and OS permissions.'
+  //       : 'No tab audio detected yet. Make sure the active tab is playing audio.';
+  //     appendTranscript(hint);
+  //     announce('No audio detected yet');
+  //   }
+  // }, 12000);
   if (source === 'mic') {
     try {
-      const ok = await requestMicPermission();
-      if (!ok) throw new Error('Microphone permission not granted');
+      // const ok = await requestMicPermission();
+      // if (!ok) throw new Error('Microphone permission not granted');
       state.micCapture = await startMicCapture({
   onChunk: (chunk) => { state.sawAudio = true; postChunkToBackground(chunk); },
         onSegment: (segment) => postSegmentToBackground(segment),
@@ -212,9 +212,10 @@ async function onStart() {
     // Start tab capture locally (MediaRecorder is not available in service worker)
     try {
       // Determine the active tab ID for the current window
-      const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
       const targetTabId = active?.id;
       const url = active?.url || '';
+      console.log('Active tab URL:', url);
       // Disallow Chrome internal and other non-capturable schemes
       if (!/^https?:/i.test(url)) {
         appendTranscript('Cannot capture this page (chrome/internal page). Switch to a regular website tab (e.g., a YouTube video) and try again.');

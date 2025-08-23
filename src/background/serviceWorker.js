@@ -11,7 +11,7 @@ chrome.runtime.onInstalled.addListener(() => {
   } catch (_) {}
 });
 
-import { startTabCapture, postSegmentToBackground } from '../audio/audioCapture.js';
+import { postSegmentToBackground } from '../audio/audioCapture.js';
 // Developer config (do not commit secrets). Create src/background/config.js from config.example.js
 let GEMINI_CONFIG = { apiKey: 'AIzaSyAi5fFFnBjvmbrLIFI_J-6KanD5mFcx1VI', model: 'gemini-2.5-flash' };
 
@@ -148,46 +148,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       running = true;
       setStatus('listening');
     }
-    // Start tab capture(s) if requested
-    if (payload?.source === 'tab' || payload?.source === 'tab+mic' || payload?.source === 'multi-tab') {
-      const tabIds = Array.isArray(payload?.tabIds) && payload.tabIds.length ? payload.tabIds : [null]; // null => active tab
-      tabIds.forEach(async (tid) => {
-        const key = tid ?? 'active';
-        if (tabCaptures.has(key)) return; // already capturing
-        try {
-          const controller = await startTabCapture({
-            targetTabId: tid ?? undefined,
-            onChunk: ({ blob, mimeType, source, label }) => {
-              // Optional: still broadcast per-chunk for debugging/UX
-              blob.arrayBuffer().then((ab) => {
-                const base64 = btoa(String.fromCharCode(...new Uint8Array(ab)));
-                broadcast({ source: 'serviceWorker', type: 'AUDIO_CHUNK', payload: { base64, mimeType, source, label } });
-              }).catch((e) => console.warn('[serviceWorker] arrayBuffer failed', e));
-            },
-            onSegment: (segment) => {
-              // Send larger, overlapped 30s segments to backend (future)
-              postSegmentToBackground(segment);
-            },
-          });
-          tabCaptures.set(key, controller);
-          console.log('[serviceWorker] tab capture started', key);
-        } catch (e) {
-          console.warn('[serviceWorker] tab capture failed', e);
-        }
-      });
-    }
+  // Sidepanel owns capture (tab/mic/share). Background only processes segments.
     sendResponse?.({ ok: true });
   } else if (type === 'STOP_TRANSCRIPTION') {
     if (running) {
       running = false;
       setStatus('stopped');
     }
-    // Stop all tab captures
-    for (const [key, ctrl] of tabCaptures.entries()) {
-      try { ctrl.stop(); } catch (_) {}
-      tabCaptures.delete(key);
-      console.log('[serviceWorker] tab capture stopped', key);
-    }
+  // Nothing to stop in background; sidepanel controls capture lifecycles.
     sendResponse?.({ ok: true });
   } else if (type === 'AUDIO_CHUNK' && message.source === 'audioCapture') {
     // Chunks bridged from sidepanel (e.g., microphone). In a real app, forward to ASR here.

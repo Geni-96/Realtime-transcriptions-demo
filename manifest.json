@@ -16,7 +16,8 @@
   },
   "host_permissions": [
   "https://generativelanguage.googleapis.com/*",
-  "<all_urls>"
+  "http://*/*",
+  "https://*/*"
   ],
   "side_panel": {
     "default_path": "src/sidepanel/sidepanel.html"

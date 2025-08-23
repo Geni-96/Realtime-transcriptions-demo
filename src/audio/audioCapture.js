@@ -175,7 +175,13 @@ export async function startMergedCapture({ streams, labels = [], onChunk, timesl
 export async function startShareAudioCapture({ onChunk, onSegment, timeslice = 250, segmentMs = 30000, overlapMs = 3000 } = {}) {
   if (!navigator?.mediaDevices?.getDisplayMedia) throw new Error('getDisplayMedia not available');
   // Most browsers will prompt the user to choose a tab/window/screen and optionally share audio
-  const stream = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: false });
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: false });
+  } catch (e) {
+    // Some Chrome versions require video with getDisplayMedia; try with video:true
+    stream = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: true });
+  }
   // On some platforms the returned stream may not include audio if the user didn’t check "Share audio"
   return createRecorder(stream, { timeslice, source: 'share', label: 'share', onChunk, onSegment, segmentMs, overlapMs });
 }

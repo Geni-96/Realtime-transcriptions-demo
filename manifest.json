@@ -1,0 +1,28 @@
+{
+  "name": "Transcript Tester",
+  "description": "This extension allows users to transcribe audio from any active tab in real time",
+  "version": "1.0",
+  "manifest_version": 3,
+  "permissions": [
+  "activeTab",
+  "sidePanel",
+  "storage",
+  "tabs",
+  "tabCapture"
+  ],
+  "side_panel": {
+    "default_path": "src/sidepanel/sidepanel.html",
+    "open_panel_on_action_click": true
+  },
+  "action": {
+    "default_title": "Transcript Tester"
+  },
+  "background": {
+    "service_worker": "src/background/serviceWorker.js",
+    "type": "module"
+  },
+  "host_permissions": [
+  "http://*/*",
+  "https://*/*"
+  ]
+}

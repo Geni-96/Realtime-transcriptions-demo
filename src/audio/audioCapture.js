@@ -18,6 +18,17 @@
 //   can concatenate or stream chunk-wise to a backend.
 
 function createRecorder(stream, { timeslice = 250, source = 'unknown', label = source, onChunk, onSegment, segmentMs = 30000, overlapMs = 3000 }) {
+  // Ensure we have an audio track; otherwise MediaRecorder will fail to start
+  try {
+    const tracks = typeof stream.getAudioTracks === 'function' ? stream.getAudioTracks() : [];
+    if (!tracks || tracks.length === 0) {
+      try { stream.getTracks?.().forEach((t) => t.stop()); } catch (_) {}
+      throw new Error('No audio track in captured stream. Ensure the tab/system prompt had "Share audio" enabled and that audio is playing.');
+    }
+  } catch (e) {
+    // If stream is malformed, bail early
+    throw e;
+  }
   const mimeType = (() => {
     const candidates = [
       'audio/webm;codecs=opus',

@@ -165,7 +165,7 @@ function setButtons({ running }) {
 async function requestMicPermission() {
   try {
     const tmp = await navigator.mediaDevices.getUserMedia({ audio: true });
-    // tmp.getTracks().forEach((t) => t.stop());
+    tmp.getTracks().forEach((t) => t.stop());
     return true;
   } catch (e) {
     appendTranscript('Microphone permission denied or unavailable.');
@@ -212,7 +212,7 @@ async function onStart() {
     // Start tab capture locally (MediaRecorder is not available in service worker)
     try {
       // Determine the active tab ID for the current window
-      const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
       const targetTabId = active?.id;
       const url = active?.url || '';
       console.log('Active tab URL:', url);
@@ -244,13 +244,28 @@ async function onStart() {
         onSegment: (segment) => postSegmentToBackground(segment),
       });
     } catch (e) {
-      appendTranscript(`Tab capture failed. ${e?.message || e}. Ensure the side panel is opened from the same window as the target tab and that the tab is active.`);
+      const msg = String(e?.message || e || 'tab capture failed');
+      appendTranscript(`Tab capture failed. ${msg}. Ensure the side panel is opened from the same window as the target tab and that the tab is active.`);
       console.warn(e);
+      // Auto-fallback to share-audio for activeTab or chrome page limitations
+      if (/activeTab|not been invoked|cannot be captured/i.test(msg)) {
+        try {
+          const share = await startShareAudioCapture({
+            onChunk: (chunk) => { state.sawAudio = true; postChunkToBackground(chunk); },
+            onSegment: (segment) => postSegmentToBackground(segment),
+          });
+          state.tabCapture = share;
+          appendTranscript('Falling back to shared audio. In the prompt, choose the tab/window and ensure "Share audio" is checked.');
+        } catch (err) {
+          appendTranscript('Share audio fallback failed or was denied.');
+          console.warn(err);
+        }
+      }
     }
     const resp = await sendCommand('START_TRANSCRIPTION', { source: 'tab' });
     if (!resp?.ok) {
       appendTranscript('Could not contact background. Try reloading the extension.');
-    } else {
+    } else if (state.tabCapture && (typeof state.tabCapture.isRunning !== 'function' || state.tabCapture.isRunning())) {
       appendTranscript('Capturing audio from the active tab. Ensure it is playing.');
     }
   } else if (source === 'tab+mic') {

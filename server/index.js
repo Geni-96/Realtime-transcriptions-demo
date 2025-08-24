@@ -17,6 +17,10 @@ app.get('/health', (_req, res) => res.json({ ok: true }));
 
 app.post('/transcribe', async (req, res) => {
   try {
+    // console.log("Post request", req)
+    const b64 = req.body?.chunks?.[0]; 
+    const buf = Buffer.from(b64 || '', 'base64'); 
+    console.log('[Diag] size:', buf.length, 'first bytes:', [...buf.subarray(0, 8)]);
     const { chunks, mimeType } = req.body || {};
     if (!Array.isArray(chunks) || chunks.length === 0) {
       return res.status(400).json({ error: 'Missing chunks' });
@@ -24,9 +28,19 @@ app.post('/transcribe', async (req, res) => {
     if (!GEMINI_API_KEY) {
       return res.status(500).json({ error: 'Server not configured: GEMINI_API_KEY missing' });
     }
+    // Sanitize mime: Gemini expects mimeType without parameters
+    const sanitizeMime = (m) => {
+      if (!m) return 'audio/webm';
+      const base = String(m).split(';')[0].trim();
+      // Allow only known audio types; default to audio/webm
+      const allowed = ['audio/webm', 'audio/ogg', 'audio/mp3', 'audio/mpeg', 'audio/wav'];
+      return allowed.includes(base) ? base : 'audio/webm';
+    };
+    const cleanMime = sanitizeMime(mimeType);
+
     const parts = [
       { text: 'Transcribe the following audio into plain text. Respond with transcript only.' },
-      ...chunks.map((b64) => ({ inline_data: { mime_type: mimeType || 'audio/webm', data: b64 } })),
+      ...chunks.map((b64) => ({ inlineData: { mimeType: cleanMime, data: b64 } })),
     ];
     const body = { contents: [{ role: 'user', parts }] };
 
@@ -46,7 +60,13 @@ app.post('/transcribe', async (req, res) => {
     }
     if (!resp.ok) {
       const txt = await resp.text().catch(() => String(resp.status));
-      return res.status(resp.status).type('text/plain').send(txt);
+      // Try to parse JSON error to pass through
+      try {
+        const asJson = JSON.parse(txt);
+        return res.status(resp.status).json(asJson);
+      } catch {
+        return res.status(resp.status).type('text/plain').send(txt);
+      }
     }
     const data = await resp.json();
     const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join(' ').trim();

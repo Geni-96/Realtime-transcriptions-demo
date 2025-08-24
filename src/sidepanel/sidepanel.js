@@ -12,13 +12,20 @@ const segmentQueue = [];
 let isProcessing = false;
 
 // Batching & rate limiting to avoid API 500s/throttling
-const TIMESLICE_MS = 3000; // collect ~3s chunks
+// IMPORTANT: Do NOT use MediaRecorder timeslice. Instead, stop and recreate
+// the recorder every CHUNK_MS so each blob is a complete, standalone file
+// with a valid container/header (required by Gemini).
+const CHUNK_MS = 3000; // target ~3s chunks
 // Important: Concatenating WebM/Opus blobs can yield invalid containers.
 // Stick to single-segment requests unless you remux with a real muxer (ffmpeg).
 const BATCH_SEGMENTS = 1;  // process one segment per request
 const MIN_GAP_BETWEEN_REQUESTS_MS = 1000; // small delay between requests
 const INITIAL_BACKOFF_MS = 2000; // start backoff at 2s on error
 const MAX_BACKOFF_MS = 15000;     // cap backoff at 15s
+
+// Recording loop control
+let isActive = false; // true while the user has recording enabled
+let sessionTimerId = null; // timer to stop the current recorder
 
 // Load backend URL from storage on init
 try {
@@ -82,36 +89,89 @@ async function fetchWithTimeout(url, options, timeoutMs = 30000) {
   }
 }
 
+function clearSessionTimer() {
+  if (sessionTimerId) {
+    clearTimeout(sessionTimerId);
+    sessionTimerId = null;
+  }
+}
+
+function scheduleSessionStop() {
+  clearSessionTimer();
+  sessionTimerId = setTimeout(() => {
+    try {
+      if (recorder && recorder.state !== 'inactive') {
+        recorder.stop(); // triggers onstop, which will start the next session if isActive
+      }
+    } catch (e) {
+      console.warn('[SidePanel] Error stopping recorder:', e);
+    }
+  }, CHUNK_MS);
+}
+
+function startNewRecorderSession() {
+  if (!isActive) return;
+  if (!mediaStream) {
+    console.warn('[SidePanel] startNewRecorderSession: no mediaStream');
+    return;
+  }
+  try {
+    const preferredMime = 'audio/webm;codecs=opus';
+    const mimeType = MediaRecorder.isTypeSupported?.(preferredMime) ? preferredMime : undefined;
+
+    // Create a fresh MediaRecorder so the next Blob is a complete file with header
+    recorder = new MediaRecorder(mediaStream, { mimeType });
+    let sessionBlob = null; // capture a single, final blob per session
+
+    recorder.onstart = () => {
+      console.log('[SidePanel] MediaRecorder session started');
+      setStatus('Recording…');
+      scheduleSessionStop();
+    };
+    recorder.onerror = (e) => console.error('[SidePanel] MediaRecorder error:', e);
+    recorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) {
+        // Keep only the last available blob for this session
+        sessionBlob = event.data;
+      }
+    };
+    recorder.onstop = () => {
+      clearSessionTimer();
+      try {
+        if (sessionBlob && sessionBlob.size > 0) {
+          // Push the complete, standalone file blob
+          segmentQueue.push(sessionBlob);
+          void processQueue();
+        } else {
+          console.warn('[SidePanel] No blob produced for this session');
+        }
+      } finally {
+        // Immediately start a new session to continue near real-time capture
+        if (isActive) {
+          // Give the event loop a tick to avoid overlap
+          setTimeout(() => startNewRecorderSession(), 0);
+        }
+      }
+    };
+
+    recorder.start(); // no timeslice; we'll stop after CHUNK_MS
+  } catch (e) {
+    console.error('[SidePanel] Failed to start MediaRecorder session:', e);
+    setStatus('Failed to start recording session. See console.', 'error');
+  }
+}
+
 async function startRecordingIfPossible() {
   if (!mediaStream) {
     console.warn('[SidePanel] startRecordingIfPossible: no mediaStream yet');
     return;
   }
-  if (recorder && recorder.state !== 'inactive') {
-    console.log('[SidePanel] Recorder already running');
+  if (isActive) {
+    console.log('[SidePanel] Recording already active');
     return;
   }
-  try {
-    const mimeType = 'audio/webm;codecs=opus';
-    if (!MediaRecorder.isTypeSupported(mimeType)) {
-      console.warn('[SidePanel] mimeType not supported, trying default');
-    }
-    recorder = new MediaRecorder(mediaStream, { mimeType });
-    recorder.onstart = () => console.log('[SidePanel] MediaRecorder started');
-    recorder.onerror = (e) => console.error('[SidePanel] MediaRecorder error:', e);
-    recorder.ondataavailable = (event) => {
-      if (event.data && event.data.size > 0) {
-        segmentQueue.push(event.data);
-        void processQueue();
-      }
-    };
-    // collect chunks every TIMESLICE_MS
-    recorder.start(TIMESLICE_MS);
-    setStatus('Recording…');
-  } catch (e) {
-    console.error('[SidePanel] Failed to start MediaRecorder:', e);
-    setStatus('Failed to start recording. See console.', 'error');
-  }
+  isActive = true;
+  startNewRecorderSession();
 }
 
 async function processQueue() {
@@ -257,6 +317,8 @@ if (startBtn) {
 if (stopBtn) {
   stopBtn.addEventListener('click', () => {
     try {
+  isActive = false;
+  clearSessionTimer();
       if (recorder) {
         recorder.stop();
         recorder = null;

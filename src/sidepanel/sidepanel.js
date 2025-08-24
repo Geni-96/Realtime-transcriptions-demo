@@ -2,33 +2,58 @@ const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
 const transcriptDiv = document.getElementById('transcript');
 const statusDiv = document.getElementById('status');
+const apiKeyInput = document.getElementById('apiKey');
+const saveApiKeyBtn = document.getElementById('saveApiKeyBtn');
 
 let recorder;
 let mediaStream;
 const segmentQueue = [];
 let isProcessing = false;
 
-// Backend-managed secrets: configure your backend URL in chrome.storage.local { backendUrl }
-const DEFAULT_BACKEND_URL = null; // e.g., 'https://your-backend.example.com'
-let backend = { baseUrl: DEFAULT_BACKEND_URL };
+// WARNING: Do not hardcode API keys in production. Use chrome.storage or your backend.
+let GEMINI_CONFIG = { apiKey: null, model: 'gemini-2.5-flash' };
+let gemini = { apiKey: GEMINI_CONFIG.apiKey || null, model: GEMINI_CONFIG.model || 'gemini-2.5-flash' };
 
-// Load backend URL from chrome.storage on init
+// Load API key from chrome.storage on init
 try {
-  chrome.storage?.local?.get(['backendUrl'], (res) => {
+  chrome.storage?.local?.get(['geminiApiKey'], (res) => {
     if (chrome.runtime.lastError) {
       console.warn('[SidePanel] storage.get error:', chrome.runtime.lastError);
     }
-    if (res && typeof res.backendUrl === 'string' && res.backendUrl.trim()) {
-      backend.baseUrl = res.backendUrl.trim().replace(/\/$/, '');
-      setStatus('Backend URL loaded');
-    } else if (backend.baseUrl) {
-      setStatus('Using default backend URL');
+    if (res && typeof res.geminiApiKey === 'string') {
+      gemini.apiKey = res.geminiApiKey;
+      if (apiKeyInput) apiKeyInput.value = res.geminiApiKey;
+      setStatus('API key loaded from storage');
     } else {
-      setStatus('Backend URL not set. Save backendUrl in chrome.storage.local');
+      setStatus('No API key saved. Please enter one.');
     }
   });
 } catch (e) {
   console.warn('[SidePanel] chrome.storage not available:', e);
+}
+
+if (saveApiKeyBtn) {
+  saveApiKeyBtn.addEventListener('click', () => {
+    const key = apiKeyInput?.value?.trim();
+    if (!key) {
+      setStatus('Enter an API key first.', 'warn');
+      return;
+    }
+    try {
+      chrome.storage?.local?.set({ geminiApiKey: key }, () => {
+        if (chrome.runtime.lastError) {
+          console.error('[SidePanel] storage.set error:', chrome.runtime.lastError);
+          setStatus('Failed to save API key. See console.', 'error');
+          return;
+        }
+        gemini.apiKey = key;
+        setStatus('API key saved.');
+      });
+    } catch (e) {
+      console.error('[SidePanel] Error saving API key:', e);
+      setStatus('Error saving API key. See console.', 'error');
+    }
+  });
 }
 
 function setStatus(msg, level = 'info') {
@@ -98,7 +123,7 @@ async function processQueue() {
     while (segmentQueue.length > 0) {
       const segment = segmentQueue.shift();
       console.log('[SidePanel] Processing audio segment', segment);
-  // Convert blob to base64 for backend
+      // Convert blob to base64 for Gemini inline_data
       let base64;
       try {
         base64 = await blobToBase64(segment);
@@ -107,7 +132,7 @@ async function processQueue() {
         appendTranscript('<span style="color:red;">Failed to prepare audio chunk.</span>');
         continue;
       }
-  const { text, label } = await callBackendTranscribe({ chunks: [{ base64 }], mimeType: 'audio/webm' });
+      const { text, label } = await callGeminiTranscribe({ chunks: [{ base64 }], mimeType: 'audio/webm' });
       console.log('[SidePanel] Transcription result:', text);
       if (label === 'error') {
         appendTranscript('<span style="color:red;">Transcription error. Check console.</span>');
@@ -119,11 +144,16 @@ async function processQueue() {
   }
 }
 
-async function callBackendTranscribe({ chunks, mimeType }) {
+async function callGeminiTranscribe({ chunks, mimeType }) {
   try {
-    if (!backend.baseUrl) throw new Error('Backend URL not configured');
-    const url = `${backend.baseUrl}/transcribe`;
-    const body = { chunks: chunks.map((c) => c.base64), mimeType: mimeType || 'audio/webm' };
+    if (!gemini.apiKey) throw new Error('Gemini API key not set. Save it to chrome.storage or hardcode for testing.');
+    const model = gemini.model || 'gemini-2.5-flash';
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(gemini.apiKey)}`;
+    const parts = [
+      { text: 'Transcribe the following audio into plain text. Respond with transcript only.' },
+      ...chunks.map((c) => ({ inline_data: { mime_type: mimeType || 'audio/webm', data: c.base64 } })),
+    ];
+    const body = { contents: [{ role: 'user', parts }] };
     const resp = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -131,28 +161,20 @@ async function callBackendTranscribe({ chunks, mimeType }) {
     });
     if (!resp.ok) {
       const txt = await resp.text().catch(() => String(resp.status));
-      throw new Error(`Backend error ${resp.status}: ${txt}`);
+      throw new Error(`Gemini error ${resp.status}: ${txt}`);
     }
     const data = await resp.json();
-    let text = data?.text;
-    if (!text) {
-      text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join(' ').trim();
-    }
-    if (!text) throw new Error('No transcript returned by backend');
+    const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join(' ').trim();
+    if (!text) throw new Error('No transcript returned');
     return { text, label: 'ok', seq: 0 };
   } catch (error) {
-    console.error('[SidePanel] Error calling backend:', error);
+    console.error('[SidePanel] Error calling Gemini API:', error);
     return { text: '', label: 'error', seq: -1 };
   }
 }
 
 function captureActiveTabAndStart() {
   console.log('[SidePanel] Start button clicked');
-  if (!backend.baseUrl) {
-    setStatus('Backend URL not set. Save backendUrl in chrome.storage.local', 'error');
-    console.error('[SidePanel] Backend URL not configured');
-    return;
-  }
   setStatus('Requesting tab audio…');
   if (!chrome?.tabCapture) {
     setStatus('tabCapture API not available. Are permissions set?', 'error');

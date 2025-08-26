@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Realtime Transcriptions Demo",
-  "description": "Chrome extension scaffold for real-time audio transcription (JavaScript).",
+  "name": "Mimix",
+  "description": "Mimic+Mix -  Get live transcripts and mixed audio for any audio playing tab.",
   "version": "0.1.0",
   "permissions": [
   "tabCapture",

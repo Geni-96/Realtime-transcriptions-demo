@@ -2,12 +2,18 @@ const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
 const transcriptDiv = document.getElementById('transcript');
 const statusDiv = document.getElementById('status');
+const includeMicCheckbox = document.getElementById('includeMicrophone');
+const monitorAudioCheckbox = document.getElementById('monitorAudio');
 // Backend-managed secrets: configure backendUrl in chrome.storage.local
 const DEFAULT_BACKEND_URL = 'http://localhost:3001'; // change if you host elsewhere
 let backend = { baseUrl: DEFAULT_BACKEND_URL };
 
 let recorder;
-let mediaStream;
+let mediaStream; // final stream used by MediaRecorder (mixed or single source)
+let tabStream;   // raw tab capture stream
+let micStream;   // raw microphone stream
+let audioCtx;    // shared AudioContext for mixing/monitoring
+let monitorNode; // optional connection to destination for monitoring
 const segmentQueue = [];
 let isProcessing = false;
 
@@ -244,7 +250,7 @@ function captureActiveTabAndStart() {
     console.error('[SidePanel] Backend URL not configured');
     return;
   }
-  setStatus('Requesting tab audio…');
+  setStatus('Requesting audio…');
   if (!chrome?.tabCapture) {
     setStatus('tabCapture API not available. Are permissions set?', 'error');
     console.error('[SidePanel] chrome.tabCapture API not available in this context.');
@@ -257,32 +263,64 @@ function captureActiveTabAndStart() {
       console.error('[SidePanel] No active tab found');
       return;
     }
-    const useCapture = (stream) => {
-      console.log('[SidePanel] Got MediaStream. Routing to audio output for monitoring.');
-      try {
-        const AudioCtx = window.AudioContext || window.webkitAudioContext;
-        const audioCtx = new AudioCtx();
-        const source = audioCtx.createMediaStreamSource(stream);
-        source.connect(audioCtx.destination);
-        console.log('[SidePanel] Audio routed. AudioContext state:', audioCtx.state);
-      } catch (e) {
-        console.warn('[SidePanel] Failed to route audio (ok to ignore):', e);
-      }
-      mediaStream = stream;
+    const useFinalStream = (finalStream) => {
+      mediaStream = finalStream;
       void startRecordingIfPossible();
+    };
+
+    const getMicIfEnabled = async () => {
+      if (!includeMicCheckbox || includeMicCheckbox.checked) {
+        try {
+          const constraints = {
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true
+            },
+            video: false
+          };
+          const s = await navigator.mediaDevices.getUserMedia(constraints);
+          console.log('[SidePanel] Microphone stream obtained');
+          return s;
+        } catch (err) {
+          console.warn('[SidePanel] Microphone permission/error:', err);
+          setStatus('Microphone unavailable. Proceeding without mic.', 'warn');
+          return null;
+        }
+      }
+      return null;
     };
 
     if (typeof chrome.tabCapture.capture === 'function') {
       const options = { audio: true, video: false }; // Chrome will prompt user if needed
       console.log('[SidePanel] Calling tabCapture.capture with', options, 'for tab', activeTab.id);
-      chrome.tabCapture.capture(options, (stream) => {
+      chrome.tabCapture.capture(options, async (stream) => {
         if (chrome.runtime.lastError || !stream) {
-          setStatus('tabCapture.capture failed. See console.', 'error');
           console.error('[SidePanel] tabCapture.capture error:', chrome.runtime.lastError);
+          setStatus('Tab capture failed. Trying microphone only…', 'warn');
+          // Try mic-only if available
+          try {
+            micStream = await getMicIfEnabled();
+            if (micStream) {
+              // Use micStream directly
+              prepareMixAndStart(null, micStream);
+            } else {
+              setStatus('No audio sources available.', 'error');
+            }
+          } catch (e) {
+            console.error('[SidePanel] Failed to start with mic-only:', e);
+            setStatus('Unable to start audio capture.', 'error');
+          }
           return;
         }
-        console.log('[SidePanel] tabCapture.capture stream obtained', stream);
-        useCapture(stream);
+        console.log('[SidePanel] tabCapture.capture stream obtained');
+        tabStream = stream;
+        try {
+          micStream = await getMicIfEnabled();
+        } catch (_) {
+          micStream = null;
+        }
+        prepareMixAndStart(tabStream, micStream);
       });
     } else if (typeof chrome.tabCapture.getMediaStreamId === 'function') {
       console.warn('[SidePanel] capture() not available, using getMediaStreamId + getUserMedia');
@@ -296,7 +334,15 @@ function captureActiveTabAndStart() {
         navigator.mediaDevices.getUserMedia({
           audio: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: streamId } },
           video: false,
-        }).then(useCapture).catch((err) => {
+        }).then(async (stream) => {
+          tabStream = stream;
+          try {
+            micStream = await getMicIfEnabled();
+          } catch (_) {
+            micStream = null;
+          }
+          prepareMixAndStart(tabStream, micStream);
+        }).catch((err) => {
           setStatus('getUserMedia with streamId failed. See console.', 'error');
           console.error('[SidePanel] getUserMedia with streamId failed:', err);
         });
@@ -323,9 +369,18 @@ if (stopBtn) {
         recorder.stop();
         recorder = null;
       }
-      if (mediaStream) {
-        mediaStream.getTracks().forEach((track) => track.stop());
-        mediaStream = null;
+      // Stop all tracks for each stream
+      [mediaStream, tabStream, micStream].forEach((s) => {
+        try { s && s.getTracks().forEach((t) => t.stop()); } catch (_) {}
+      });
+      mediaStream = null;
+      tabStream = null;
+      micStream = null;
+      // Close AudioContext if we created one
+      if (audioCtx) {
+        try { audioCtx.close(); } catch (_) {}
+        audioCtx = null;
+        monitorNode = null;
       }
       setStatus('Stopped');
     } catch (e) {
@@ -336,4 +391,66 @@ if (stopBtn) {
   });
 } else {
   console.error('[SidePanel] stopBtn not found in DOM');
+}
+
+// Mix tab and mic streams into a single MediaStream, optionally monitor locally
+function prepareMixAndStart(tabS, micS) {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    audioCtx = audioCtx || new AudioCtx();
+
+    // If only one source is available, use it directly
+    if (tabS && !micS) {
+      setStatus('Capturing tab audio');
+      useNoMonitorRoute(tabS);
+      return;
+    }
+    if (micS && !tabS) {
+      setStatus('Capturing microphone audio');
+      useNoMonitorRoute(micS);
+      return;
+    }
+
+    // Both available: mix
+    const tabSource = audioCtx.createMediaStreamSource(tabS);
+    const micSource = audioCtx.createMediaStreamSource(micS);
+    const tabGain = audioCtx.createGain();
+    const micGain = audioCtx.createGain();
+    tabGain.gain.value = 0.9;
+    micGain.gain.value = 0.9;
+    const destination = audioCtx.createMediaStreamDestination();
+    tabSource.connect(tabGain).connect(destination);
+    micSource.connect(micGain).connect(destination);
+
+    // Optional monitoring
+    if (monitorAudioCheckbox && monitorAudioCheckbox.checked) {
+      try {
+        // Prevent double connections by creating a separate summing path
+        const monitorMerger = audioCtx.createGain();
+        tabSource.connect(monitorMerger);
+        micSource.connect(monitorMerger);
+        monitorNode = monitorMerger.connect(audioCtx.destination);
+      } catch (e) {
+        console.warn('[SidePanel] Failed to enable monitoring:', e);
+      }
+    }
+
+    useFinalStream(destination.stream);
+  } catch (e) {
+    console.error('[SidePanel] Error preparing audio mix:', e);
+    setStatus('Failed to prepare audio mix. Using available source.', 'warn');
+    if (tabS) return useNoMonitorRoute(tabS);
+    if (micS) return useNoMonitorRoute(micS);
+    setStatus('No audio sources available.', 'error');
+  }
+
+  function useNoMonitorRoute(stream) {
+    try {
+      // Avoid routing to destination unless monitoring explicitly requested
+      useFinalStream(stream);
+    } catch (e) {
+      console.warn('[SidePanel] useNoMonitorRoute error:', e);
+      useFinalStream(stream);
+    }
+  }
 }

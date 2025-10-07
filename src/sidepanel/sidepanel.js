@@ -397,57 +397,85 @@ if (stopBtn) {
 function prepareMixAndStart(tabS, micS) {
   try {
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    audioCtx = audioCtx || new AudioCtx();
+    // Always create a fresh context on start for clean graph
+    audioCtx = new AudioCtx();
 
-    // If only one source is available, use it directly
-    if (tabS && !micS) {
-      setStatus('Capturing tab audio');
-      useNoMonitorRoute(tabS);
-      return;
+    const hasAudioTracks = (s) => !!(s && s.getAudioTracks && s.getAudioTracks().some((t) => t.enabled && t.readyState === 'live'));
+    const sources = [];
+
+    if (hasAudioTracks(tabS)) {
+      try {
+        const src = audioCtx.createMediaStreamSource(tabS);
+        const gain = audioCtx.createGain();
+        gain.gain.value = 0.9;
+        sources.push({ src, gain });
+      } catch (e) {
+        console.warn('[SidePanel] Could not create source for tab stream:', e);
+      }
     }
-    if (micS && !tabS) {
-      setStatus('Capturing microphone audio');
-      useNoMonitorRoute(micS);
-      return;
+    if (hasAudioTracks(micS)) {
+      try {
+        const src = audioCtx.createMediaStreamSource(micS);
+        const gain = audioCtx.createGain();
+        gain.gain.value = 0.9;
+        sources.push({ src, gain });
+      } catch (e) {
+        console.warn('[SidePanel] Could not create source for mic stream:', e);
+      }
     }
 
-    // Both available: mix
-    const tabSource = audioCtx.createMediaStreamSource(tabS);
-    const micSource = audioCtx.createMediaStreamSource(micS);
-    const tabGain = audioCtx.createGain();
-    const micGain = audioCtx.createGain();
-    tabGain.gain.value = 0.9;
-    micGain.gain.value = 0.9;
-    const destination = audioCtx.createMediaStreamDestination();
-    tabSource.connect(tabGain).connect(destination);
-    micSource.connect(micGain).connect(destination);
+    if (sources.length === 0) {
+      throw new Error('No valid audio tracks to mix');
+    }
 
-    // Optional monitoring
+    const mixBus = audioCtx.createGain();
+    sources.forEach(({ src, gain }) => src.connect(gain).connect(mixBus));
+
+    const mediaDest = audioCtx.createMediaStreamDestination();
+    mixBus.connect(mediaDest);
+
+    // Optional monitoring: send the same mix bus to speakers
     if (monitorAudioCheckbox && monitorAudioCheckbox.checked) {
       try {
-        // Prevent double connections by creating a separate summing path
-        const monitorMerger = audioCtx.createGain();
-        tabSource.connect(monitorMerger);
-        micSource.connect(monitorMerger);
-        monitorNode = monitorMerger.connect(audioCtx.destination);
+        monitorNode = mixBus.connect(audioCtx.destination);
       } catch (e) {
         console.warn('[SidePanel] Failed to enable monitoring:', e);
       }
     }
 
-    useFinalStream(destination.stream);
+    // Update status based on which sources are active
+    if (sources.length === 2) setStatus('Capturing tab + microphone');
+    else if (hasAudioTracks(tabS)) setStatus('Capturing tab audio');
+    else setStatus('Capturing microphone audio');
+
+    useFinalStream(mediaDest.stream);
   } catch (e) {
     console.error('[SidePanel] Error preparing audio mix:', e);
     setStatus('Failed to prepare audio mix. Using available source.', 'warn');
-    if (tabS) return useNoMonitorRoute(tabS);
-    if (micS) return useNoMonitorRoute(micS);
+    // Fallback: prefer tab, else mic
+    if (tabS && tabS.getAudioTracks && tabS.getAudioTracks().length) return useNoMonitorRoute(tabS);
+    if (micS && micS.getAudioTracks && micS.getAudioTracks().length) return useNoMonitorRoute(micS);
     setStatus('No audio sources available.', 'error');
   }
 
   function useNoMonitorRoute(stream) {
     try {
       // Avoid routing to destination unless monitoring explicitly requested
-      useFinalStream(stream);
+      if (monitorAudioCheckbox && monitorAudioCheckbox.checked) {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        audioCtx = new AudioCtx();
+        const hasAudio = stream && stream.getAudioTracks && stream.getAudioTracks().length;
+        if (hasAudio) {
+          const src = audioCtx.createMediaStreamSource(stream);
+          const gain = audioCtx.createGain();
+          gain.gain.value = 1.0;
+          const mediaDest = audioCtx.createMediaStreamDestination();
+          src.connect(gain).connect(mediaDest);
+          monitorNode = gain.connect(audioCtx.destination);
+          return useFinalStream(mediaDest.stream);
+        }
+      }
+      return useFinalStream(stream);
     } catch (e) {
       console.warn('[SidePanel] useNoMonitorRoute error:', e);
       useFinalStream(stream);

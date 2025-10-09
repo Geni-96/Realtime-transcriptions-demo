@@ -61,6 +61,11 @@ function setStatus(msg, level = 'info') {
   statusDiv.textContent = msg;
 }
 
+function setFinalStream(finalStream) {
+  mediaStream = finalStream;
+  void startRecordingIfPossible();
+}
+
 function appendTranscript(html) {
   if (!transcriptDiv) return;
   const p = document.createElement('p');
@@ -274,11 +279,6 @@ function captureActiveTabAndStart() {
       console.error('[SidePanel] No active tab found');
       return;
     }
-    const useFinalStream = (finalStream) => {
-      mediaStream = finalStream;
-      void startRecordingIfPossible();
-    };
-
     const getMicIfEnabled = async () => {
       // Only request microphone if the user explicitly enabled it
       if (includeMicCheckbox && includeMicCheckbox.checked) {
@@ -305,7 +305,7 @@ function captureActiveTabAndStart() {
 
     if (typeof chrome.tabCapture.capture === 'function') {
       // Do not mute or toggle original tab audio; we want the tab to keep playing sound
-      const options = { audio: true, video: false, audioConstraints: { echoCancellation: false } };
+      const options = { audio: true, video: false };
       console.log('[SidePanel] Calling tabCapture.capture with', options, 'for tab', activeTab.id);
       const tryCapture = () => new Promise((resolve) => {
         chrome.tabCapture.capture(options, (stream) => {
@@ -508,7 +508,7 @@ function prepareMixAndStart(tabS, micS) {
     if (!includeMic && tabS) {
       setStatus('Capturing tab audio');
       setupElementMonitoringIfRequested(tabS);
-      return useFinalStream(tabS);
+      return setFinalStream(tabS);
     }
 
     // Create a fresh audio context for the mixer
@@ -575,7 +575,7 @@ function prepareMixAndStart(tabS, micS) {
     else if (hasAudioTracks(tabS)) setStatus('Capturing tab audio');
     else setStatus('Capturing microphone audio');
 
-    useFinalStream(mediaDest.stream);
+      setFinalStream(mediaDest.stream);
   } catch (e) {
     console.error('[SidePanel] Error preparing audio mix:', e);
     setStatus('Failed to prepare audio mix. Using available source.', 'warn');
@@ -588,10 +588,10 @@ function prepareMixAndStart(tabS, micS) {
   function useNoMonitorRoute(stream) {
     try {
       setupElementMonitoringIfRequested(stream);
-      return useFinalStream(stream);
+      return setFinalStream(stream);
     } catch (e) {
       console.warn('[SidePanel] useNoMonitorRoute error:', e);
-      useFinalStream(stream);
+      setFinalStream(stream);
     }
   }
 }

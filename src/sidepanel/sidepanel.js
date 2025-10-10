@@ -3,7 +3,6 @@ const stopBtn = document.getElementById('stopBtn');
 const transcriptDiv = document.getElementById('transcript');
 const statusDiv = document.getElementById('status');
 const includeMicCheckbox = document.getElementById('includeMicrophone');
-const monitorAudioCheckbox = document.getElementById('monitorAudio');
 // Backend-managed secrets: configure backendUrl in chrome.storage.local
 const DEFAULT_BACKEND_URL = 'http://localhost:3001'; // change if you host elsewhere
 let backend = { baseUrl: DEFAULT_BACKEND_URL };
@@ -13,7 +12,6 @@ let mediaStream; // final stream used by MediaRecorder (mixed or single source)
 let tabStream;   // raw tab capture stream
 let micStream;   // raw microphone stream
 let audioCtx;    // shared AudioContext for mixing/monitoring
-let monitorNode; // optional connection to destination for monitoring
 let monitorAudioEl; // optional <audio> element used to monitor tab-only/mic-only
 let originalTabMutedInfo = null; // to restore tab's muted state on stop
 const segmentQueue = [];
@@ -265,7 +263,7 @@ function captureActiveTabAndStart() {
       try { s && s.getTracks().forEach((t) => t.stop()); } catch (_) {}
     });
     mediaStream = null; tabStream = null; micStream = null;
-    if (audioCtx) { try { audioCtx.close(); } catch (_) {} audioCtx = null; monitorNode = null; }
+  if (audioCtx) { try { audioCtx.close(); } catch (_) {} audioCtx = null; }
   } catch (_) {}
   if (!chrome?.tabCapture) {
     setStatus('tabCapture API not available. Are permissions set?', 'error');
@@ -473,7 +471,6 @@ if (stopBtn) {
       if (audioCtx) {
         try { audioCtx.close(); } catch (_) {}
         audioCtx = null;
-        monitorNode = null;
       }
       // Restore tab muted state if we modified it
       if (originalTabMutedInfo) {
@@ -507,7 +504,7 @@ function prepareMixAndStart(tabS, micS) {
     // Fast path: if mic isn't requested and tab stream exists, avoid mixer
     if (!includeMic && tabS) {
       setStatus('Capturing tab audio');
-      setupElementMonitoringIfRequested(tabS);
+      ensureElementMonitoring(tabS);
       return setFinalStream(tabS);
     }
 
@@ -558,16 +555,11 @@ function prepareMixAndStart(tabS, micS) {
     const mediaDest = audioCtx.createMediaStreamDestination();
     mixBus.connect(mediaDest);
 
-    // Optional monitoring: send the same mix bus to speakers
-    if (monitorAudioCheckbox && monitorAudioCheckbox.checked) {
-      try {
-        monitorNode = mixBus.connect(audioCtx.destination);
-        // When monitoring via extension, we may want to mute the original tab to avoid double audio
-        // However, by default we leave it unmuted to respect user expectations; uncomment if desired:
-        // if (tabStream) forceTabMute(true);
-      } catch (e) {
-        console.warn('[SidePanel] Failed to enable monitoring:', e);
-      }
+    // Monitor the live mix locally so playback never stops
+    try {
+      mixBus.connect(audioCtx.destination);
+    } catch (e) {
+      console.warn('[SidePanel] Failed to route mix to destination:', e);
     }
 
   // Update status based on which sources are active
@@ -587,7 +579,7 @@ function prepareMixAndStart(tabS, micS) {
 
   function useNoMonitorRoute(stream) {
     try {
-      setupElementMonitoringIfRequested(stream);
+  ensureElementMonitoring(stream);
       return setFinalStream(stream);
     } catch (e) {
       console.warn('[SidePanel] useNoMonitorRoute error:', e);
@@ -596,9 +588,8 @@ function prepareMixAndStart(tabS, micS) {
   }
 }
 
-function setupElementMonitoringIfRequested(stream) {
+function ensureElementMonitoring(stream) {
   try {
-    if (!(monitorAudioCheckbox && monitorAudioCheckbox.checked)) return;
     if (!monitorAudioEl) {
       monitorAudioEl = document.createElement('audio');
       monitorAudioEl.style.display = 'none';
@@ -612,7 +603,7 @@ function setupElementMonitoringIfRequested(stream) {
       if (p && typeof p.then === 'function') p.catch((e) => console.warn('[SidePanel] monitor play blocked:', e));
     }
   } catch (e) {
-    console.warn('[SidePanel] setupElementMonitoringIfRequested failed:', e);
+    console.warn('[SidePanel] ensureElementMonitoring failed:', e);
   }
 }
 

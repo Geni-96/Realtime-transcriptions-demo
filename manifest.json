@@ -1,5 +1,5 @@
 {
-  "name": "Transcript Tester",
+  "name": "Mimix",
   "description": "This extension allows users to transcribe audio from any active tab in real time",
   "version": "1.0",
   "manifest_version": 3,

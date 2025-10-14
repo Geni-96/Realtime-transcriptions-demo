@@ -38,3 +38,8 @@ chrome.storage.local.set({ backendUrl: 'http://localhost:3001' })
 - If you still see `INVALID_ARGUMENT`, confirm the server logs show each chunk size > 0 and that the MIME is `audio/webm`.
 - Try increasing `CHUNK_MS` (e.g., 4000–6000) to reduce frequency of requests.
 - Ensure Chrome permissions allow `tabCapture`.
+
+## Testing
+
+- Install dependencies with `npm install` in the repository root.
+- Run unit tests locally with `npm test`. The suite currently exercises the tab capture workflow and is ready to plug into GitHub Actions.

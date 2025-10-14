@@ -42,4 +42,4 @@ chrome.storage.local.set({ backendUrl: 'http://localhost:3001' })
 ## Testing
 
 - Install dependencies with `npm install` in the repository root.
-- Run unit tests locally with `npm test`. The suite currently exercises the tab capture workflow and is ready to plug into GitHub Actions.
+- Run unit tests locally with `npm test`. The suite exercises both tab and microphone capture flows and is ready to drop into a future GitHub Actions workflow.

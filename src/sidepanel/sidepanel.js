@@ -643,3 +643,18 @@ function waitForAudioTracks(stream, timeoutMs = 2000) {
     const timer = setTimeout(() => { if (!done) { done = true; cleanup(); resolve(); } }, timeoutMs);
   });
 }
+
+const __testHooks = {
+  triggerCapture: captureActiveTabAndStart,
+  getState: () => ({
+    recorder,
+    mediaStream,
+    tabStream,
+    micStream,
+    isActive
+  })
+};
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = __testHooks;
+}

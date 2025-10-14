@@ -3,6 +3,7 @@ describe('serviceWorker tab capture handler', () => {
   let captureOptions;
   let connectMock;
   let audioContextInstance;
+  let consoleErrorSpy;
 
   beforeEach(() => {
     jest.resetModules();
@@ -47,11 +48,14 @@ describe('serviceWorker tab capture handler', () => {
     if (typeof messageHandler !== 'function') {
       throw new Error('runtime.onMessage listener was not registered');
     }
+
+    consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
   });
 
   afterEach(() => {
     delete global.chrome;
     delete global.AudioContext;
+    consoleErrorSpy.mockRestore();
   });
 
   it('responds with success when tab capture returns a stream', async () => {
@@ -74,6 +78,7 @@ describe('serviceWorker tab capture handler', () => {
     expect(AudioContext).toHaveBeenCalledTimes(1);
     expect(audioContextInstance.createMediaStreamSource).toHaveBeenCalledWith(dummyStream);
     expect(connectMock).toHaveBeenCalledWith(audioContextInstance.destination);
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
   });
 
   it('responds with an error when tab capture fails to provide a stream', async () => {
@@ -97,6 +102,7 @@ describe('serviceWorker tab capture handler', () => {
       error: runtimeError
     });
     expect(AudioContext).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).toHaveBeenCalledWith('[SW] tabCapture error:', runtimeError);
   });
 
   it('catches synchronous errors from tabCapture and responds with failure', async () => {
@@ -117,5 +123,6 @@ describe('serviceWorker tab capture handler', () => {
       status: 'Error starting transcription',
       error: syncError
     });
+    expect(consoleErrorSpy).toHaveBeenCalledWith('[SW] Error starting transcription:', syncError);
   });
 });

@@ -43,3 +43,8 @@ chrome.storage.local.set({ backendUrl: 'http://localhost:3001' })
 
 - Install dependencies with `npm install` in the repository root.
 - Run unit tests locally with `npm test`. The suite exercises both tab and microphone capture flows and is ready to drop into a future GitHub Actions workflow.
+
+## Continuous Integration
+
+- GitHub Actions runs the same `npm test` suite on every push and pull request targeting `main` or `tester`.
+- The workflow lives in `.github/workflows/ci.yml` and uses Node 20 with npm dependency caching for faster builds.

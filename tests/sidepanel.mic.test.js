@@ -201,18 +201,26 @@ describe('sidepanel microphone capture', () => {
       micStreamPromise: failingPromise
     });
 
-    // Prevent unhandled rejection warnings
-    failingPromise.catch(() => {});
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
-    startButton.click();
-    await flushPromises();
-    await flushPromises();
-    await flushPromises();
+    try {
+      // Prevent unhandled rejection warnings
+      failingPromise.catch(() => {});
 
-    expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledTimes(1);
+      startButton.click();
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
 
-    const state = sidepanelHooks.getState();
-    expect(state.micStream).toBeNull();
-    expect(audioContextInstance.createMediaStreamSource).toHaveBeenCalledTimes(1);
+      expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledTimes(1);
+
+      const state = sidepanelHooks.getState();
+      expect(state.micStream).toBeNull();
+      expect(audioContextInstance.createMediaStreamSource).toHaveBeenCalledTimes(1);
+
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('mic denied'), micError);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

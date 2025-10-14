@@ -16,7 +16,7 @@ const GEMINI_RETRY_BACKOFF = Number(process.env.GEMINI_RETRY_BACKOFF || 2);
 
 const WAIT = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-if (!GEMINI_API_KEY) {
+if (!GEMINI_API_KEY && process.env.NODE_ENV !== 'test') {
   console.warn('[Server] GEMINI_API_KEY not set. Set it in .env');
 }
 
@@ -40,7 +40,6 @@ function buildModelFallbacks(preferred) {
   }
 
   const curatedFallbacks = [
-    'gemini-2.0-flash-lite',
     'gemini-2.0-flash-lite-001',
     'gemini-2.0-flash',
     'gemini-2.5-flash-lite',
@@ -96,6 +95,21 @@ async function callGeminiModel({ model, body }) {
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
+const isRetryableError = (error) => {
+  if (!error) return false;
+  if (error.name === 'AbortError') return true;
+
+  const status = error?.httpStatus ?? error?.status;
+  const message = String(error?.message || error || '');
+  if (status && [404, 409, 425, 429, 500, 503].includes(Number(status))) {
+    return true;
+  }
+  if (/aborted|timeout|timed\s*out|deadline/i.test(message)) {
+    return true;
+  }
+  return /not\s+found|not\s+supported|overload|try again later|temporarily unavailable|backend error/i.test(message);
+};
+
 app.post('/transcribe', async (req, res) => {
   try {
     // console.log("Post request", req)
@@ -129,16 +143,6 @@ app.post('/transcribe', async (req, res) => {
     let lastError = null;
     let backoffDelay = 0;
 
-    const isRetryableError = (status, message) => {
-      if (!status && !message) return false;
-      const normalizedStatus = Number(status) || undefined;
-      const text = message || '';
-      if (normalizedStatus && [404, 409, 425, 429, 500, 503].includes(normalizedStatus)) {
-        return true;
-      }
-      return /not\s+found|not\s+supported|overload|try again later|temporarily unavailable|backend error/i.test(text);
-    };
-
     for (const candidate of candidates) {
       try {
         const result = await callGeminiModel({ model: candidate, body });
@@ -148,12 +152,15 @@ app.post('/transcribe', async (req, res) => {
         return res.json({ text: result.text, model: candidate });
       } catch (err) {
         lastError = { err, model: candidate };
-        const status = err?.httpStatus || err?.status;
+        if (err?.name === 'AbortError' && !err.httpStatus) {
+          err.httpStatus = 504;
+        }
+        const retryable = isRetryableError(err);
         const message = String(err?.message || err);
-        const retryable = isRetryableError(status, message);
         console.warn(`[Server] Model ${candidate} failed (${message}).${retryable ? ' Trying next fallback…' : ''}`);
         if (!retryable) {
-          return res.status(status || 500).json({ error: message, details: err?.httpBody, model: candidate });
+          const status = err?.httpStatus || err?.status || (err?.name === 'AbortError' ? 504 : 500);
+          return res.status(status).json({ error: message, details: err?.httpBody, model: candidate });
         }
 
         if (backoffDelay <= 0) {
@@ -168,7 +175,9 @@ app.post('/transcribe', async (req, res) => {
     }
 
     const fallbackMessage = lastError?.err?.message || 'No compatible Gemini model available';
-    const status = lastError?.err?.httpStatus === 404 ? 404 : (lastError?.err?.httpStatus || 502);
+    const status = lastError?.err?.httpStatus === 404
+      ? 404
+      : (lastError?.err?.httpStatus || (lastError?.err?.name === 'AbortError' ? 504 : 502));
     return res.status(status).json({
       error: fallbackMessage,
       triedModels: candidates,
@@ -182,6 +191,19 @@ app.post('/transcribe', async (req, res) => {
 });
 
 const PORT = Number(process.env.PORT || 3001);
-app.listen(PORT, () => {
-  console.log(`[Server] listening on http://localhost:${PORT}`);
-});
+
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`[Server] listening on http://localhost:${PORT}`);
+  });
+}
+
+module.exports = {
+  app,
+  normalizeModelName,
+  buildModelFallbacks,
+  _internals: {
+    isRetryableError,
+    callGeminiModel,
+  },
+};

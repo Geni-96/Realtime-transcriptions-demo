@@ -59,6 +59,21 @@ function setStatus(msg, level = 'info') {
   statusDiv.textContent = msg;
 }
 
+function describeError(err) {
+  if (!err) return 'Unknown error';
+  if (typeof err === 'string') return err;
+  const name = err?.name || err?.constructor?.name;
+  const message = err?.message;
+  if (name && message) return `${name}: ${message}`;
+  if (name) return name;
+  if (message) return message;
+  try {
+    return JSON.stringify(err);
+  } catch (_) {
+    return String(err);
+  }
+}
+
 function setFinalStream(finalStream) {
   mediaStream = finalStream;
   void startRecordingIfPossible();
@@ -293,7 +308,8 @@ function captureActiveTabAndStart() {
           console.log('[SidePanel] Microphone stream obtained');
           return s;
         } catch (err) {
-          console.warn('[SidePanel] Microphone permission/error:', err);
+          const detail = describeError(err);
+          console.warn(`[SidePanel] Microphone permission/error: ${detail}`, err);
           setStatus('Microphone unavailable. Proceeding without mic.', 'warn');
           return null;
         }

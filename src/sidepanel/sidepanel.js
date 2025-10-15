@@ -533,9 +533,11 @@ function prepareMixAndStart(tabS, micS) {
     if (hasAudioTracks(tabS)) {
       try {
         const src = audioCtx.createMediaStreamSource(tabS);
-        const gain = audioCtx.createGain();
-        gain.gain.value = 0.9;
-        sources.push({ src, gain });
+        const recordGain = audioCtx.createGain();
+        recordGain.gain.value = 0.9;
+        const monitorGain = audioCtx.createGain();
+        monitorGain.gain.value = 0.9;
+        sources.push({ src, recordGain, monitorGain, kind: 'tab' });
       } catch (e) {
         console.warn('[SidePanel] Could not create source for tab stream:', e);
       }
@@ -543,9 +545,11 @@ function prepareMixAndStart(tabS, micS) {
     if (hasAudioTracks(micS)) {
       try {
         const src = audioCtx.createMediaStreamSource(micS);
-        const gain = audioCtx.createGain();
-        gain.gain.value = 0.9;
-        sources.push({ src, gain });
+        const recordGain = audioCtx.createGain();
+        recordGain.gain.value = 0.9;
+        const monitorGain = audioCtx.createGain();
+        monitorGain.gain.value = 0;
+        sources.push({ src, recordGain, monitorGain, kind: 'mic' });
       } catch (e) {
         console.warn('[SidePanel] Could not create source for mic stream:', e);
       }
@@ -555,27 +559,51 @@ function prepareMixAndStart(tabS, micS) {
       // If neither stream yields a source node, fall back to direct stream usage
       if (tabS) {
         setStatus('Capturing tab (tracks not detected yet)');
-        return useNoMonitorRoute(tabS);
+        return useNoMonitorRoute(tabS, { allowMonitor: true });
       }
       if (micS) {
         setStatus('Capturing microphone (tracks not detected yet)');
-        return useNoMonitorRoute(micS);
+        return useNoMonitorRoute(micS, { allowMonitor: false });
       }
       setStatus('No audio sources available.', 'error');
       return;
     }
 
     const mixBus = audioCtx.createGain();
-    sources.forEach(({ src, gain }) => src.connect(gain).connect(mixBus));
+    mixBus.gain.value = 1;
+    const monitorBus = audioCtx.createGain();
+    monitorBus.gain.value = 1;
+    let monitorConnected = false;
+
+    sources.forEach(({ src, recordGain, monitorGain }) => {
+      try {
+        src.connect(recordGain);
+        recordGain.connect(mixBus);
+      } catch (e) {
+        console.warn('[SidePanel] Failed to wire record path:', e);
+      }
+      if (monitorGain) {
+        try {
+          src.connect(monitorGain);
+          monitorGain.connect(monitorBus);
+          if (monitorGain.gain.value !== 0) {
+            monitorConnected = true;
+          }
+        } catch (e) {
+          console.warn('[SidePanel] Failed to wire monitor path:', e);
+        }
+      }
+    });
 
     const mediaDest = audioCtx.createMediaStreamDestination();
     mixBus.connect(mediaDest);
 
-    // Monitor the live mix locally so playback never stops
-    try {
-      mixBus.connect(audioCtx.destination);
-    } catch (e) {
-      console.warn('[SidePanel] Failed to route mix to destination:', e);
+    if (monitorConnected) {
+      try {
+        monitorBus.connect(audioCtx.destination);
+      } catch (e) {
+        console.warn('[SidePanel] Failed to route monitor bus to destination:', e);
+      }
     }
 
   // Update status based on which sources are active
@@ -583,19 +611,27 @@ function prepareMixAndStart(tabS, micS) {
     else if (hasAudioTracks(tabS)) setStatus('Capturing tab audio');
     else setStatus('Capturing microphone audio');
 
+    if (hasAudioTracks(tabS)) {
+      try {
+        ensureElementMonitoring(tabS);
+      } catch (e) {
+        console.warn('[SidePanel] Unable to monitor tab audio:', e);
+      }
+    }
+
       setFinalStream(mediaDest.stream);
   } catch (e) {
     console.error('[SidePanel] Error preparing audio mix:', e);
     setStatus('Failed to prepare audio mix. Using available source.', 'warn');
     // Fallback: prefer tab, else mic; even if tracks are not yet detectable, proceed
-    if (tabS) return useNoMonitorRoute(tabS);
-    if (micS) return useNoMonitorRoute(micS);
+    if (tabS) return useNoMonitorRoute(tabS, { allowMonitor: true });
+    if (micS) return useNoMonitorRoute(micS, { allowMonitor: false });
     setStatus('No audio sources available.', 'error');
   }
 
-  function useNoMonitorRoute(stream) {
+  function useNoMonitorRoute(stream, { allowMonitor = true } = {}) {
     try {
-  ensureElementMonitoring(stream);
+      if (allowMonitor) ensureElementMonitoring(stream);
       return setFinalStream(stream);
     } catch (e) {
       console.warn('[SidePanel] useNoMonitorRoute error:', e);

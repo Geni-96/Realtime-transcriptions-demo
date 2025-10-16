@@ -60,6 +60,7 @@ describe('sidepanel microphone capture', () => {
         <input id="includeMicrophone" type="checkbox" ${includeMicChecked ? 'checked' : ''} />
         <button id="startBtn">Start</button>
         <button id="stopBtn">Stop</button>
+        <button id="downloadBtn" disabled>Download</button>
         <div id="status"></div>
         <div id="transcript"></div>
       </div>

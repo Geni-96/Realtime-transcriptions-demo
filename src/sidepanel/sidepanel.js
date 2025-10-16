@@ -1,5 +1,6 @@
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
+const downloadBtn = document.getElementById('downloadBtn');
 const transcriptDiv = document.getElementById('transcript');
 const statusDiv = document.getElementById('status');
 const includeMicCheckbox = document.getElementById('includeMicrophone');
@@ -84,6 +85,47 @@ function appendTranscript(html) {
   const p = document.createElement('p');
   p.innerHTML = html;
   transcriptDiv.appendChild(p);
+  updateDownloadButtonState();
+}
+
+function collectTranscriptLines() {
+  if (!transcriptDiv) return [];
+  const paragraphs = transcriptDiv.querySelectorAll('p');
+  if (!paragraphs || paragraphs.length === 0) return [];
+  return Array.from(paragraphs)
+    .map((node) => (node.textContent || '').trim())
+    .filter((text) => text.length > 0);
+}
+
+function updateDownloadButtonState() {
+  if (!downloadBtn) return;
+  const hasContent = collectTranscriptLines().length > 0;
+  downloadBtn.disabled = !hasContent;
+}
+
+function triggerTranscriptDownload() {
+  const lines = collectTranscriptLines();
+  if (lines.length === 0) {
+    setStatus('No transcript available to download yet.', 'warn');
+    return;
+  }
+  try {
+    const plainText = lines.join('\n\n');
+    const blob = new Blob([plainText], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    const fileName = `transcript-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
+    anchor.href = url;
+    anchor.download = fileName;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    setStatus(`Transcript downloaded as ${fileName}`);
+  } catch (err) {
+    console.error('[SidePanel] Failed to download transcript:', err);
+    setStatus('Unable to download transcript. See console.', 'error');
+  }
 }
 
 function blobToBase64(blob) {
@@ -465,6 +507,13 @@ if (startBtn) {
   startBtn.addEventListener('click', captureActiveTabAndStart);
 } else {
   console.error('[SidePanel] startBtn not found in DOM');
+}
+
+if (downloadBtn) {
+  downloadBtn.addEventListener('click', triggerTranscriptDownload);
+  updateDownloadButtonState();
+} else {
+  console.error('[SidePanel] downloadBtn not found in DOM');
 }
 
 if (stopBtn) {

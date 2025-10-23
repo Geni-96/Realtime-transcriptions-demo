@@ -10,6 +10,13 @@
         <input id="includeMicrophone" type="checkbox" /> Include microphone
       </label>
     </div>
+    <div style="margin-bottom: 8px;">
+      <label for="engineSelect" style="margin-right: 8px;">Transcription engine:</label>
+      <select id="engineSelect">
+        <option value="gemini">Gemini (cloud)</option>
+        <option value="faster_whisper">Faster Whisper (WebSocket)</option>
+      </select>
+    </div>
     <button id="startBtn">Start</button>
     <button id="stopBtn">Stop</button>
     <button id="downloadBtn" disabled>Download transcript</button>

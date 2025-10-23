@@ -4,9 +4,22 @@ const downloadBtn = document.getElementById('downloadBtn');
 const transcriptDiv = document.getElementById('transcript');
 const statusDiv = document.getElementById('status');
 const includeMicCheckbox = document.getElementById('includeMicrophone');
+const engineSelect = document.getElementById('engineSelect');
 // Backend-managed secrets: configure backendUrl in chrome.storage.local
 const DEFAULT_BACKEND_URL = 'http://localhost:3001'; // change if you host elsewhere
 let backend = { baseUrl: DEFAULT_BACKEND_URL };
+
+const ENGINE_STORAGE_KEY = 'transcriptionEngine';
+const ENGINES = Object.freeze({
+  GEMINI: 'gemini',
+  FASTER_WHISPER: 'faster_whisper'
+});
+const ENGINE_LABEL = {
+  [ENGINES.GEMINI]: 'Gemini',
+  [ENGINES.FASTER_WHISPER]: 'Faster Whisper'
+};
+
+let activeEngine = ENGINES.GEMINI;
 
 let recorder;
 let mediaStream; // final stream used by MediaRecorder (mixed or single source)
@@ -36,21 +49,37 @@ let sessionTimerId = null; // timer to stop the current recorder
 
 // Load backend URL from storage on init
 try {
-  chrome.storage?.local?.get(['backendUrl'], (res) => {
+  chrome.storage?.local?.get(['backendUrl', ENGINE_STORAGE_KEY], (res) => {
     if (chrome.runtime.lastError) {
       console.warn('[SidePanel] storage.get error:', chrome.runtime.lastError);
     }
+    const storedEngine = res && res[ENGINE_STORAGE_KEY];
+    if (typeof storedEngine === 'string') {
+      setActiveEngine(storedEngine, { silent: true });
+    } else if (engineSelect && engineSelect.value !== activeEngine) {
+      engineSelect.value = activeEngine;
+    }
+
     if (res && typeof res.backendUrl === 'string' && res.backendUrl.trim()) {
       backend.baseUrl = res.backendUrl.trim().replace(/\/$/, '');
-      setStatus('Backend URL loaded');
-    } else if (backend.baseUrl) {
-      setStatus(`Using backend: ${backend.baseUrl}`);
+    }
+
+    if (backend.baseUrl) {
+      setStatus(`Using backend: ${backend.baseUrl} • Engine: ${describeEngine()}`);
     } else {
-      setStatus('Backend URL not set. Save backendUrl in chrome.storage.local');
+      setStatus(`Backend URL not set. Save backendUrl in chrome.storage.local • Engine: ${describeEngine()}`);
     }
   });
 } catch (e) {
   console.warn('[SidePanel] chrome.storage not available:', e);
+}
+
+if (engineSelect) {
+  engineSelect.addEventListener('change', () => {
+    setActiveEngine(engineSelect.value, { persist: true });
+  });
+} else {
+  console.warn('[SidePanel] engineSelect not found in DOM');
 }
 
 function setStatus(msg, level = 'info') {
@@ -144,6 +173,47 @@ function blobToBase64(blob) {
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function normalizeEngine(value) {
+  if (!value) return ENGINES.GEMINI;
+  const normalized = String(value).toLowerCase();
+  return normalized === ENGINES.FASTER_WHISPER ? ENGINES.FASTER_WHISPER : ENGINES.GEMINI;
+}
+
+function describeEngine(engine = activeEngine) {
+  return ENGINE_LABEL[engine] || engine;
+}
+
+function setActiveEngine(engine, { persist = false, silent = false } = {}) {
+  const normalized = normalizeEngine(engine);
+  activeEngine = normalized;
+  if (engineSelect && engineSelect.value !== normalized) {
+    engineSelect.value = normalized;
+  }
+  if (persist && chrome?.storage?.local?.set) {
+    try {
+      chrome.storage.local.set({ [ENGINE_STORAGE_KEY]: normalized }, () => {
+        if (chrome.runtime?.lastError) {
+          console.warn('[SidePanel] storage.set error:', chrome.runtime.lastError);
+        }
+      });
+    } catch (e) {
+      console.warn('[SidePanel] storage.set threw:', e);
+    }
+  }
+  if (!silent) {
+    setStatus(`Engine set to ${describeEngine(normalized)}`);
+  }
+  return normalized;
+}
+
+function getActiveEngine() {
+  return activeEngine;
+}
+
+if (engineSelect) {
+  engineSelect.value = activeEngine;
 }
 
 async function fetchWithTimeout(url, options, timeoutMs = 30000) {
@@ -263,10 +333,15 @@ async function processQueue() {
         continue;
       }
 
-  const { text, label } = await callBackendTranscribe({ chunks: [{ base64 }], mimeType: currentMime });
+      const engineForRequest = getActiveEngine();
+      const { text, label } = await callBackendTranscribe({
+        engine: engineForRequest,
+        chunks: [{ base64 }],
+        mimeType: currentMime
+      });
       console.log('[SidePanel] Transcription result:', text);
       if (label === 'error') {
-        appendTranscript('<span style="color:red;">Transcription error. Backing off…</span>');
+        appendTranscript(`<span style="color:red;">${describeEngine(engineForRequest)} error. Backing off…</span>`);
         backoff = backoff ? Math.min(backoff * 2, MAX_BACKOFF_MS) : INITIAL_BACKOFF_MS;
         await new Promise((r) => setTimeout(r, backoff));
       } else {
@@ -280,11 +355,17 @@ async function processQueue() {
   }
 }
 
-async function callBackendTranscribe({ chunks, mimeType }) {
+async function callBackendTranscribe({ chunks, mimeType, engine }) {
+  const chosenEngine = normalizeEngine(engine);
   try {
     if (!backend.baseUrl) throw new Error('Backend URL not configured');
     const url = `${backend.baseUrl}/transcribe`;
-    const body = { chunks: chunks.map((c) => c.base64), mimeType: mimeType || 'audio/webm' };
+    const chunkPayload = Array.isArray(chunks) ? chunks.map((c) => c.base64) : [];
+    const body = {
+      engine: chosenEngine,
+      chunks: chunkPayload,
+      mimeType: mimeType || 'audio/webm'
+    };
     const resp = await fetchWithTimeout(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
@@ -297,11 +378,34 @@ async function callBackendTranscribe({ chunks, mimeType }) {
       throw err;
     }
     const data = await resp.json();
-    const text = data?.text ?? data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join(' ').trim();
-    if (!text) throw new Error('No transcript returned by backend');
-    return { text, label: 'ok', seq: 0 };
+    let text;
+    if (typeof data?.text === 'string') {
+      text = data.text;
+    } else if (Array.isArray(data?.candidates)) {
+      const parts = [];
+      data.candidates.forEach((candidate) => {
+        const candidateParts = candidate?.content?.parts;
+        if (Array.isArray(candidateParts)) {
+          candidateParts.forEach((part) => {
+            if (typeof part?.text === 'string' && part.text.trim()) {
+              parts.push(part.text.trim());
+            }
+          });
+        }
+      });
+      if (parts.length > 0) {
+        text = parts.join(' ').trim();
+      }
+    }
+    if (typeof text !== 'string') {
+      throw new Error('No transcript returned by backend');
+    }
+    text = typeof text.trim === 'function' ? text.trim() : text;
+    const label = typeof data?.label === 'string' ? data.label : 'ok';
+    const seq = Number.isInteger(data?.seq) ? data.seq : 0;
+    return { text, label, seq };
   } catch (error) {
-    console.error('[SidePanel] Error calling backend:', error);
+    console.error(`[SidePanel] Error calling backend (${describeEngine(chosenEngine)}):`, error);
     return { text: '', label: 'error', seq: -1 };
   }
 }
@@ -313,7 +417,7 @@ function captureActiveTabAndStart() {
     console.error('[SidePanel] Backend URL not configured');
     return;
   }
-  setStatus('Requesting audio…');
+  setStatus(`Requesting audio… (${describeEngine(getActiveEngine())})`);
   // Clean up any previous streams before starting a new capture
   try {
     [mediaStream, tabStream, micStream].forEach((s) => {
@@ -752,7 +856,8 @@ const __testHooks = {
     mediaStream,
     tabStream,
     micStream,
-    isActive
+    isActive,
+    engine: getActiveEngine()
   })
 };
 

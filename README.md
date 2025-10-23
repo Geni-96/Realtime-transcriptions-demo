@@ -2,6 +2,13 @@
 
 This Chrome extension captures tab audio and streams it to a minimal Node backend which proxies requests to Gemini for transcription.
 
+## New: Faster Whisper support
+
+- Pick the transcription engine from the side panel dropdown (`Gemini` or `Faster Whisper`).
+- When `Faster Whisper` is selected, the backend converts each WebM chunk to 16 kHz PCM and streams 640-byte frames over WebSocket to the configured Faster Whisper endpoint (default `ws://184.175.182.249/ws`).
+- Configure the backend via environment variables (see `server/README.md`) if you host the Faster Whisper service elsewhere.
+- Gemini remains fully supported; switch back at any time without reloading the extension.
+
 ## Update: Standalone audio chunks per request
 
 To avoid `INVALID_ARGUMENT` from Gemini, the extension now ensures every audio chunk is a complete, standalone file with a valid container header.
@@ -42,7 +49,7 @@ chrome.storage.local.set({ backendUrl: 'http://localhost:3001' })
 ## Testing
 
 - Install dependencies with `npm install` in the repository root and `npm install --prefix server` (or `npm ci --prefix server`) for the backend helpers.
-- Run unit tests locally with `npm test`. The suite exercises both tab and microphone capture flows and is ready to drop into a future GitHub Actions workflow.
+- Run unit tests locally with `npm test`. The suite exercises both tab/mic capture flows and verifies the engine selector logic.
 
 ## Continuous Integration
 

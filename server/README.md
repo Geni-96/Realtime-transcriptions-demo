@@ -12,6 +12,9 @@
   - `GEMINI_RETRY_BASE_MS` – optional initial retry delay (default `1000`)
   - `GEMINI_RETRY_BACKOFF` – optional multiplier applied each retry (default `2`)
   - `GEMINI_RETRY_MAX_MS` – optional cap for retry delay (default `8000`)
+    - `FASTER_WHISPER_WS_URL` – optional (defaults to `ws://184.175.182.249/ws`); set to your Faster Whisper WebSocket endpoint
+    - `FASTER_WHISPER_TIMEOUT_MS` – optional overall timeout when streaming via Faster Whisper (default `45000`)
+    - `FASTER_WHISPER_POST_STREAM_DELAY_MS` – optional delay (ms) before closing the socket after the last frame (default `200`)
   - `PORT` – optional (default 3001)
 
 2. Install and run:
@@ -31,9 +34,10 @@ npm run start
 POST /transcribe
 - Request JSON:
   - `chunks`: array of base64 strings (audio chunks)
-  - `mimeType`: audio type; parameters like `;codecs=opus` are stripped
+  - `mimeType`: audio type; parameters like `;codecs=opus` are stripped when talking to Gemini
+  - `engine`: optional string (`"gemini"` by default or `"faster_whisper"`)
 - Response JSON:
-  - `{ text: string }`
+  - `{ text: string, engine: 'gemini' | 'faster_whisper' }`
 
 ## Client config
 
@@ -48,4 +52,5 @@ Then click Start in the side panel.
 ## Notes
 - WebM/Opus chunks should be sent one at a time to avoid invalid container concatenation.
 - The server strips MIME params and uses `inlineData` payload format required by Gemini.
-- Increase express.json limit if you plan to send larger chunks.
+- When `engine` is `faster_whisper`, the server converts each chunk to 16 kHz PCM via `ffmpeg-static` and streams 640-byte frames over WebSocket. Final transcripts are assembled from `final` messages exposed by the Faster Whisper service.
+- Increase `express.json` limit if you plan to send larger chunks.

@@ -58,6 +58,10 @@ describe('sidepanel microphone capture', () => {
     document.body.innerHTML = `
       <div>
         <input id="includeMicrophone" type="checkbox" ${includeMicChecked ? 'checked' : ''} />
+        <select id="engineSelect">
+          <option value="gemini">Gemini (cloud)</option>
+          <option value="faster_whisper">Faster Whisper (WebSocket)</option>
+        </select>
         <button id="startBtn">Start</button>
         <button id="stopBtn">Stop</button>
         <button id="downloadBtn" disabled>Download</button>
@@ -132,7 +136,12 @@ describe('sidepanel microphone capture', () => {
         onInstalled: { addListener: jest.fn() }
       },
       storage: {
-        local: { get: jest.fn((keys, cb) => cb({})) }
+        local: {
+          get: jest.fn((keys, cb) => cb({})),
+          set: jest.fn((values, cb) => {
+            if (typeof cb === 'function') cb();
+          })
+        }
       },
       tabs: {
         query: jest.fn((queryInfo, cb) => cb([activeTab])),
@@ -237,6 +246,7 @@ describe('sidepanel microphone capture', () => {
   it('falls back gracefully when microphone capture fails', async () => {
     const micError = new Error('mic denied');
     const failingPromise = Promise.reject(micError);
+    failingPromise.catch(() => {});
   const { startButton, sidepanelHooks, navigator, audioContextInstance, gainNodes, getMonitorElement } = setupCommonMocks({
       includeMicChecked: true,
       micStreamPromise: failingPromise
@@ -245,9 +255,6 @@ describe('sidepanel microphone capture', () => {
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
     try {
-      // Prevent unhandled rejection warnings
-      failingPromise.catch(() => {});
-
       startButton.click();
       await flushPromises();
       await flushPromises();

@@ -22,7 +22,7 @@ const ENGINES = Object.freeze({
   FASTER_WHISPER: 'faster_whisper'
 });
 
-const DEFAULT_FASTER_WHISPER_WS_URL = 'ws://184.175.182.249/ws';
+const DEFAULT_FASTER_WHISPER_WS_URL = 'ws://localhost:8000/ws';
 const FASTER_WHISPER_WS_URL = (() => {
   const raw = process.env.FASTER_WHISPER_WS_URL;
   if (typeof raw === 'string' && raw.trim()) return raw.trim();

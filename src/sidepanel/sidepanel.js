@@ -31,6 +31,12 @@ let originalTabMutedInfo = null; // to restore tab's muted state on stop
 const segmentQueue = [];
 let isProcessing = false;
 
+// Persistent WebSocket session (used for Faster Whisper)
+let ws = null;
+let wsReady = false;
+let wsConnecting = false;
+let livePartialEl = null; // ephemeral paragraph for live partials
+
 // Batching & rate limiting to avoid API 500s/throttling
 // IMPORTANT: Do NOT use MediaRecorder timeslice. Instead, stop and recreate
 // the recorder every CHUNK_MS so each blob is a complete, standalone file
@@ -122,6 +128,7 @@ function collectTranscriptLines() {
   const paragraphs = transcriptDiv.querySelectorAll('p');
   if (!paragraphs || paragraphs.length === 0) return [];
   return Array.from(paragraphs)
+    .filter((node) => node.dataset?.role !== 'partial')
     .map((node) => (node.textContent || '').trim())
     .filter((text) => text.length > 0);
 }
@@ -323,35 +330,154 @@ async function processQueue() {
       const segment = segmentQueue.shift();
       const currentMime = segment?.type || recorder?.mimeType || 'audio/webm;codecs=opus';
       console.log('[SidePanel] Processing segment', { size: segment?.size, type: currentMime });
-
-      let base64;
-      try {
-        base64 = await blobToBase64(segment);
-      } catch (e) {
-        console.error('[SidePanel] blobToBase64 failed:', e);
-        appendTranscript('<span style=\"color:red;\">Failed to prepare audio chunk.</span>');
-        continue;
-      }
-
       const engineForRequest = getActiveEngine();
-      const { text, label } = await callBackendTranscribe({
-        engine: engineForRequest,
-        chunks: [{ base64 }],
-        mimeType: currentMime
-      });
-      console.log('[SidePanel] Transcription result:', text);
-      if (label === 'error') {
-        appendTranscript(`<span style="color:red;">${describeEngine(engineForRequest)} error. Backing off…</span>`);
-        backoff = backoff ? Math.min(backoff * 2, MAX_BACKOFF_MS) : INITIAL_BACKOFF_MS;
-        await new Promise((r) => setTimeout(r, backoff));
+      if (engineForRequest === ENGINES.FASTER_WHISPER) {
+        // Stream this segment over the persistent WebSocket
+        const ok = await ensureWsConnected();
+        if (!ok) {
+          appendTranscript('<span style="color:red;">Streaming not available. See console.</span>');
+          backoff = backoff ? Math.min(backoff * 2, MAX_BACKOFF_MS) : INITIAL_BACKOFF_MS;
+          await sleep(backoff);
+          continue;
+        }
+        try {
+          const ab = await segment.arrayBuffer();
+          ws.send(ab);
+          backoff = 0;
+          await sleep(MIN_GAP_BETWEEN_REQUESTS_MS);
+        } catch (e) {
+          console.error('[SidePanel] WS send failed:', e);
+          appendTranscript('<span style="color:red;">Failed sending audio to stream.</span>');
+          backoff = backoff ? Math.min(backoff * 2, MAX_BACKOFF_MS) : INITIAL_BACKOFF_MS;
+          await sleep(backoff);
+        }
       } else {
-        if (text) appendTranscript(text);
-        backoff = 0; // reset on success
-        await new Promise((r) => setTimeout(r, MIN_GAP_BETWEEN_REQUESTS_MS));
+        // Gemini: keep existing single-request per segment
+        let base64;
+        try {
+          base64 = await blobToBase64(segment);
+        } catch (e) {
+          console.error('[SidePanel] blobToBase64 failed:', e);
+          appendTranscript('<span style="color:red;">Failed to prepare audio chunk.</span>');
+          continue;
+        }
+        const { text, label } = await callBackendTranscribe({
+          engine: engineForRequest,
+          chunks: [{ base64 }],
+          mimeType: currentMime
+        });
+        console.log('[SidePanel] Transcription result:', text);
+        if (label === 'error') {
+          appendTranscript(`<span style="color:red;">${describeEngine(engineForRequest)} error. Backing off…</span>`);
+          backoff = backoff ? Math.min(backoff * 2, MAX_BACKOFF_MS) : INITIAL_BACKOFF_MS;
+          await sleep(backoff);
+        } else {
+          if (text) appendTranscript(text);
+          backoff = 0; // reset on success
+          await sleep(MIN_GAP_BETWEEN_REQUESTS_MS);
+        }
       }
     }
   } finally {
     isProcessing = false;
+  }
+}
+
+function buildWsUrl() {
+  try {
+    if (!backend.baseUrl) return null;
+    const url = new URL(backend.baseUrl);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    url.pathname = (url.pathname?.replace(/\/$/, '') || '') + '/ws/transcribe';
+    url.search = `engine=${encodeURIComponent(ENGINES.FASTER_WHISPER)}`;
+    return url.toString();
+  } catch (e) {
+    console.warn('[SidePanel] Invalid backend URL for WS:', e);
+    return null;
+  }
+}
+
+async function ensureWsConnected() {
+  if (ws && wsReady) return true;
+  if (wsConnecting) {
+    // Wait briefly for existing attempt
+    for (let i = 0; i < 10; i++) {
+      await sleep(100);
+      if (ws && wsReady) return true;
+    }
+  }
+  const wsUrl = buildWsUrl();
+  if (!wsUrl) return false;
+  try {
+    wsConnecting = true;
+    ws = new WebSocket(wsUrl);
+    ws.binaryType = 'arraybuffer';
+    wsReady = false;
+
+    ws.addEventListener('open', () => {
+      wsReady = true;
+      setStatus(`Streaming connected • ${describeEngine(ENGINES.FASTER_WHISPER)}`);
+    });
+    ws.addEventListener('message', (evt) => {
+      try {
+        const data = typeof evt.data === 'string' ? JSON.parse(evt.data) : null;
+        if (!data) return;
+        const txt = typeof data.text === 'string' ? data.text.trim() : '';
+        if (data.type === 'final' && txt) {
+          // Remove any live partial line and append final as a new paragraph
+          try {
+            if (livePartialEl && livePartialEl.parentNode) {
+              livePartialEl.parentNode.removeChild(livePartialEl);
+            }
+          } catch (_) {}
+          livePartialEl = null;
+          appendTranscript(txt);
+        } else if (data.type === 'partial' && txt) {
+          if (!transcriptDiv) return;
+          if (!livePartialEl) {
+            const p = document.createElement('p');
+            p.dataset.role = 'partial';
+            p.style.opacity = '0.7';
+            p.style.fontStyle = 'italic';
+            transcriptDiv.appendChild(p);
+            livePartialEl = p;
+          }
+          livePartialEl.textContent = txt;
+        } else if (data.type === 'error') {
+          setStatus(`Stream error: ${data.error}`, 'error');
+        }
+      } catch (_) {}
+    });
+    ws.addEventListener('close', () => {
+      wsReady = false;
+      wsConnecting = false;
+      ws = null;
+      // Remove any dangling partial on disconnect
+      try {
+        if (livePartialEl && livePartialEl.parentNode) {
+          livePartialEl.parentNode.removeChild(livePartialEl);
+        }
+      } catch (_) {}
+      livePartialEl = null;
+      if (isActive) setStatus('Streaming disconnected', 'warn');
+    });
+    ws.addEventListener('error', (e) => {
+      console.warn('[SidePanel] WS error:', e);
+    });
+
+    // Wait for readiness up to 2s
+    for (let i = 0; i < 20 && !wsReady; i++) {
+      await sleep(100);
+    }
+    return !!wsReady;
+  } catch (e) {
+    console.error('[SidePanel] Failed to open WS:', e);
+    wsConnecting = false;
+    wsReady = false;
+    ws = null;
+    return false;
+  } finally {
+    wsConnecting = false;
   }
 }
 
@@ -629,6 +755,20 @@ if (stopBtn) {
         recorder.stop();
         recorder = null;
       }
+      // Close WS session if any
+      try {
+        if (ws) {
+          try { ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ event: 'end' })); } catch (_) {}
+          setTimeout(() => { try { ws.close(1000, 'user stop'); } catch (_) {} }, 50);
+        }
+      } catch (_) {}
+      // Remove any live partial line
+      try {
+        if (livePartialEl && livePartialEl.parentNode) {
+          livePartialEl.parentNode.removeChild(livePartialEl);
+        }
+      } catch (_) {}
+      livePartialEl = null;
       // Stop all tracks for each stream
       [mediaStream, tabStream, micStream].forEach((s) => {
         try { s && s.getTracks().forEach((t) => t.stop()); } catch (_) {}

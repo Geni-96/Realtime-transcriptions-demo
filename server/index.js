@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const http = require('http');
 const { spawn } = require('child_process');
 const WebSocket = require('ws');
 const ffmpegPath = require('ffmpeg-static');
@@ -496,14 +497,153 @@ app.post('/transcribe', async (req, res) => {
 
 const PORT = Number(process.env.PORT || 3001);
 
+// Create an HTTP server so we can attach a WebSocket server for streaming sessions
+const server = http.createServer(app);
+
+// WebSocket endpoint: persistent transcription sessions
+// Client protocol:
+// - Connect to ws://host/ws/transcribe?engine=faster_whisper
+// - First JSON message is optional; if provided can include { engine, mimeType }
+// - Subsequent binary messages are audio container chunks (webm/ogg/wav/mp3)
+// - Server converts each chunk to PCM16LE @ 16k and streams frames to the upstream Faster Whisper WS
+// - Upstream partial/final transcript messages are forwarded to the client as JSON: { type: 'partial'|'final', text }
+// - Send { event: 'end' } to flush and close the upstream session
+const wss = new WebSocket.Server({ server, path: '/ws/transcribe' });
+
+function buildWsUrl(base) {
+  try {
+    return new URL(base);
+  } catch (_) {
+    return null;
+  }
+}
+
+// Simple FIFO to serialize async tasks
+class AsyncQueue {
+  constructor() { this.chain = Promise.resolve(); }
+  push(task) {
+    this.chain = this.chain.then(() => task()).catch(() => {});
+    return this.chain;
+  }
+}
+
+wss.on('connection', (client, req) => {
+  const params = new URLSearchParams((req.url || '').split('?')[1] || '');
+  const requestedEngine = normalizeEngineChoice(params.get('engine'));
+  const engine = requestedEngine || ENGINES.FASTER_WHISPER;
+
+  // Only Faster Whisper is supported via WS for now
+  if (engine !== ENGINES.FASTER_WHISPER) {
+    client.send(JSON.stringify({ type: 'error', error: 'Only faster_whisper engine is supported over WebSocket' }));
+    client.close(1002, 'unsupported engine');
+    return;
+  }
+
+  if (!FASTER_WHISPER_WS_URL) {
+    client.send(JSON.stringify({ type: 'error', error: 'FASTER_WHISPER_WS_URL not configured' }));
+    client.close(1011, 'server not configured');
+    return;
+  }
+
+  let upstream;
+  let closed = false;
+  const sendQueue = new AsyncQueue();
+
+  const finalize = (code = 1000, reason = 'done') => {
+    if (closed) return;
+    closed = true;
+    try { client.close(code, reason); } catch (_) {}
+    try { if (upstream && (upstream.readyState === WebSocket.OPEN || upstream.readyState === WebSocket.CONNECTING)) upstream.terminate(); } catch (_) {}
+  };
+
+  // Connect upstream to Faster Whisper server
+  try {
+    upstream = new WebSocket(FASTER_WHISPER_WS_URL, { handshakeTimeout: Math.min(FASTER_WHISPER_TIMEOUT_MS, 10000) });
+  } catch (err) {
+    client.send(JSON.stringify({ type: 'error', error: String(err?.message || err) }));
+    return finalize(1011, 'upstream connect failed');
+  }
+
+  upstream.on('open', () => {
+    try { client.send(JSON.stringify({ type: 'ready' })); } catch (_) {}
+  });
+
+  upstream.on('message', (payload) => {
+    const { text, isFinal } = parseFasterWhisperMessage(payload);
+    if (!text) return;
+    const msg = JSON.stringify({ type: isFinal ? 'final' : 'partial', text });
+    try { client.send(msg); } catch (_) {}
+  });
+
+  upstream.once('error', (err) => {
+    try { client.send(JSON.stringify({ type: 'error', error: String(err?.message || err) })); } catch (_) {}
+    finalize(1011, 'upstream error');
+  });
+
+  upstream.on('close', () => {
+    finalize(1000, 'upstream closed');
+  });
+
+  const sendPcmFrames = async (pcm) => {
+    if (!pcm || !pcm.length) return;
+    if (!upstream || upstream.readyState !== WebSocket.OPEN) return;
+    for (let offset = 0; offset < pcm.length; offset += FASTER_WHISPER_FRAME_BYTES) {
+      const slice = pcm.subarray(offset, Math.min(offset + FASTER_WHISPER_FRAME_BYTES, pcm.length));
+      let frame = slice;
+      if (slice.length < FASTER_WHISPER_FRAME_BYTES) {
+        frame = Buffer.alloc(FASTER_WHISPER_FRAME_BYTES);
+        slice.copy(frame);
+      }
+      await new Promise((resolveSend, rejectSend) => {
+        upstream.send(frame, { binary: true }, (err) => (err ? rejectSend(err) : resolveSend()));
+      });
+    }
+  };
+
+  client.on('message', (data, isBinary) => {
+    // Control messages
+    if (!isBinary) {
+      let parsed = null;
+      try { parsed = JSON.parse(typeof data === 'string' ? data : data.toString('utf8')); } catch (_) {}
+      const evt = parsed?.event;
+      if (evt === 'end') {
+        // Give ASR a brief moment to emit final results
+        const closeLater = async () => {
+          if (FASTER_WHISPER_POST_STREAM_DELAY_MS > 0) {
+            await WAIT(FASTER_WHISPER_POST_STREAM_DELAY_MS);
+          }
+          try { upstream?.close(1000, 'end of audio'); } catch (_) {}
+        };
+        return void closeLater();
+      }
+      return; // ignore other JSON messages for now
+    }
+
+    // Binary audio container chunk -> convert to PCM and stream frames upstream in order
+    const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
+    sendQueue.push(async () => {
+      try {
+        const pcm = await convertToPCM16LE(buffer, { sampleRate: FASTER_WHISPER_SAMPLE_RATE });
+        await sendPcmFrames(pcm);
+      } catch (err) {
+        try { client.send(JSON.stringify({ type: 'error', error: String(err?.message || err) })); } catch (_) {}
+      }
+    });
+  });
+
+  client.once('error', () => finalize(1006, 'client error'));
+  client.on('close', () => finalize(1000, 'client closed'));
+});
+
 if (require.main === module) {
-  app.listen(PORT, () => {
+  server.listen(PORT, () => {
     console.log(`[Server] listening on http://localhost:${PORT}`);
   });
 }
 
 module.exports = {
   app,
+  server,
   normalizeModelName,
   buildModelFallbacks,
   normalizeEngineChoice,

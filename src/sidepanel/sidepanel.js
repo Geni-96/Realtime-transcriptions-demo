@@ -36,6 +36,7 @@ let ws = null;
 let wsReady = false;
 let wsConnecting = false;
 let livePartialEl = null; // ephemeral paragraph for live partials
+let transcriptSequence = 0; // counts final transcripts
 
 // Batching & rate limiting to avoid API 500s/throttling
 // IMPORTANT: Do NOT use MediaRecorder timeslice. Instead, stop and recreate
@@ -115,10 +116,26 @@ function setFinalStream(finalStream) {
   void startRecordingIfPossible();
 }
 
-function appendTranscript(html) {
+function formatTimestamp(date = new Date()) {
+  // HH:MM:SS (local)
+  return date.toTimeString().slice(0, 8);
+}
+
+function appendTranscript(html, { isFinal = true } = {}) {
   if (!transcriptDiv) return;
   const p = document.createElement('p');
-  p.innerHTML = html;
+  if (isFinal) {
+    transcriptSequence += 1;
+    const ts = formatTimestamp();
+    // Wrap original text to keep styling simple; store raw for download
+    p.dataset.seq = String(transcriptSequence);
+    p.dataset.ts = ts;
+    p.dataset.role = 'final';
+    p.innerHTML = `<strong>[#${transcriptSequence} ${ts}]</strong> ${html}`;
+  } else {
+    p.dataset.role = 'partial';
+    p.innerHTML = html;
+  }
   transcriptDiv.appendChild(p);
   updateDownloadButtonState();
 }
@@ -128,8 +145,13 @@ function collectTranscriptLines() {
   const paragraphs = transcriptDiv.querySelectorAll('p');
   if (!paragraphs || paragraphs.length === 0) return [];
   return Array.from(paragraphs)
-    .filter((node) => node.dataset?.role !== 'partial')
-    .map((node) => (node.textContent || '').trim())
+    .filter((node) => node.dataset?.role === 'final')
+    .map((node) => {
+      const seq = node.dataset.seq || '';
+      const ts = node.dataset.ts || '';
+      const raw = (node.textContent || '').replace(/^\[#?(\d+) .*?\]\s*/,'').trim();
+      return `[${seq || '?'} ${ts}] ${raw}`.trim();
+    })
     .filter((text) => text.length > 0);
 }
 
@@ -424,25 +446,53 @@ async function ensureWsConnected() {
         if (!data) return;
         const txt = typeof data.text === 'string' ? data.text.trim() : '';
         if (data.type === 'final' && txt) {
-          // Remove any live partial line and append final as a new paragraph
-          try {
-            if (livePartialEl && livePartialEl.parentNode) {
-              livePartialEl.parentNode.removeChild(livePartialEl);
+          // Convert the most recent partial into a final line if present; otherwise append as new final
+          if (livePartialEl && livePartialEl.parentNode) {
+            try {
+              // Assign numbering and timestamp, and restyle from partial -> final
+              transcriptSequence += 1;
+              const ts = formatTimestamp();
+              livePartialEl.dataset.role = 'final';
+              livePartialEl.dataset.seq = String(transcriptSequence);
+              livePartialEl.dataset.ts = ts;
+              // Reset styles from partial emphasis
+              livePartialEl.style.fontWeight = 'normal';
+              livePartialEl.style.color = '';
+              livePartialEl.style.background = '';
+              livePartialEl.style.padding = '';
+              livePartialEl.style.borderRadius = '';
+              // Update text with prefix and final content
+              livePartialEl.textContent = `[#${transcriptSequence} ${ts}] ${txt}`;
+            } catch (_) {
+              appendTranscript(txt, { isFinal: true });
             }
-          } catch (_) {}
+          } else {
+            appendTranscript(txt, { isFinal: true });
+          }
           livePartialEl = null;
-          appendTranscript(txt);
         } else if (data.type === 'partial' && txt) {
           if (!transcriptDiv) return;
-          if (!livePartialEl) {
-            const p = document.createElement('p');
-            p.dataset.role = 'partial';
-            p.style.opacity = '0.7';
-            p.style.fontStyle = 'italic';
-            transcriptDiv.appendChild(p);
-            livePartialEl = p;
+          // Demote previous partial styling (if any)
+          if (livePartialEl) {
+            try {
+              livePartialEl.style.fontWeight = 'normal';
+              livePartialEl.style.color = '#333';
+              livePartialEl.style.background = 'transparent';
+              livePartialEl.style.padding = '';
+              livePartialEl.style.borderRadius = '';
+            } catch (_) {}
           }
-          livePartialEl.textContent = txt;
+          // Append a brand new partial line
+          const p = document.createElement('p');
+          p.dataset.role = 'partial';
+          p.style.fontWeight = 'bold';
+          p.style.color = '#000';
+          p.style.background = 'rgba(0,0,0,0.05)';
+          p.style.padding = '2px 4px';
+          p.style.borderRadius = '3px';
+          p.textContent = txt;
+          transcriptDiv.appendChild(p);
+          livePartialEl = p;
         } else if (data.type === 'error') {
           setStatus(`Stream error: ${data.error}`, 'error');
         }
@@ -452,12 +502,7 @@ async function ensureWsConnected() {
       wsReady = false;
       wsConnecting = false;
       ws = null;
-      // Remove any dangling partial on disconnect
-      try {
-        if (livePartialEl && livePartialEl.parentNode) {
-          livePartialEl.parentNode.removeChild(livePartialEl);
-        }
-      } catch (_) {}
+      // Keep partial lines appended as historical context
       livePartialEl = null;
       if (isActive) setStatus('Streaming disconnected', 'warn');
     });
@@ -762,13 +807,9 @@ if (stopBtn) {
           setTimeout(() => { try { ws.close(1000, 'user stop'); } catch (_) {} }, 50);
         }
       } catch (_) {}
-      // Remove any live partial line
-      try {
-        if (livePartialEl && livePartialEl.parentNode) {
-          livePartialEl.parentNode.removeChild(livePartialEl);
-        }
-      } catch (_) {}
+      // Keep previously appended partial lines; clear current pointer only
       livePartialEl = null;
+      transcriptSequence = transcriptSequence; // keep sequence for next session if desired
       // Stop all tracks for each stream
       [mediaStream, tabStream, micStream].forEach((s) => {
         try { s && s.getTracks().forEach((t) => t.stop()); } catch (_) {}

@@ -35,14 +35,26 @@ let isProcessing = false;
 let ws = null;
 let wsReady = false;
 let wsConnecting = false;
-let livePartialEl = null; // ephemeral paragraph for live partials
+let livePartialEl = null; // current interim (partial) line
+let lastFinalEl = null;   // last finalized line for potential replacement by 'final'
 let transcriptSequence = 0; // counts final transcripts
+
+// Accumulator for non-streaming (Gemini HTTP) responses that may return
+// the full conversation so far. We derive deltas, append completed sentences,
+// and keep an interim line for the current incomplete sentence.
+const geminiState = {
+  totalFinalText: '', // text already committed as final lines in the UI
+  interimEl: null,    // current interim <p> element (if any)
+  interimText: ''     // current interim text content
+};
 
 // Batching & rate limiting to avoid API 500s/throttling
 // IMPORTANT: Do NOT use MediaRecorder timeslice. Instead, stop and recreate
 // the recorder every CHUNK_MS so each blob is a complete, standalone file
 // with a valid container/header (required by Gemini).
-const CHUNK_MS = 3000; // target ~3s chunks
+// Tune chunk size: smaller chunks yield more frequent backend responses.
+// Keep conservative to avoid throttling; you can lower to 1500ms if your backend can handle it.
+const CHUNK_MS = 2000; // target ~2s chunks for snappier updates
 // Important: Concatenating WebM/Opus blobs can yield invalid containers.
 // Stick to single-segment requests unless you remux with a real muxer (ffmpeg).
 const BATCH_SEGMENTS = 1;  // process one segment per request
@@ -121,23 +133,33 @@ function formatTimestamp(date = new Date()) {
   return date.toTimeString().slice(0, 8);
 }
 
-function appendTranscript(html, { isFinal = true } = {}) {
+function appendTranscript(html, { isFinal = true, speaker = null } = {}) {
   if (!transcriptDiv) return;
   const p = document.createElement('p');
   if (isFinal) {
     transcriptSequence += 1;
     const ts = formatTimestamp();
-    // Wrap original text to keep styling simple; store raw for download
     p.dataset.seq = String(transcriptSequence);
     p.dataset.ts = ts;
     p.dataset.role = 'final';
-    p.innerHTML = `<strong>[#${transcriptSequence} ${ts}]</strong> ${html}`;
+    p.dataset.transcript = String(html);
+    if (speaker) p.dataset.speaker = String(speaker);
+    p.innerHTML = `<strong>[#${transcriptSequence} ${ts}]</strong> ${speaker ? speaker + ': ' : ''}${html}`;
+    lastFinalEl = p;
   } else {
-    p.dataset.role = 'partial';
-    p.innerHTML = html;
+    p.dataset.role = 'interim';
+    p.dataset.transcript = String(html);
+    if (speaker) p.dataset.speaker = String(speaker);
+    p.style.fontWeight = 'bold';
+    p.style.color = '#000';
+    p.style.background = 'rgba(0,0,0,0.05)';
+    p.style.padding = '2px 4px';
+    p.style.borderRadius = '3px';
+    p.textContent = `${speaker ? speaker + ': ' : ''}${html}`;
   }
   transcriptDiv.appendChild(p);
   updateDownloadButtonState();
+  return p;
 }
 
 function collectTranscriptLines() {
@@ -147,10 +169,11 @@ function collectTranscriptLines() {
   return Array.from(paragraphs)
     .filter((node) => node.dataset?.role === 'final')
     .map((node) => {
-      const seq = node.dataset.seq || '';
-      const ts = node.dataset.ts || '';
-      const raw = (node.textContent || '').replace(/^\[#?(\d+) .*?\]\s*/,'').trim();
-      return `[${seq || '?'} ${ts}] ${raw}`.trim();
+      const seq = node.dataset.seq || '?';
+      const ts = node.dataset.ts || formatTimestamp();
+      const speaker = node.dataset.speaker ? `${node.dataset.speaker}: ` : '';
+      const text = node.dataset.transcript || (node.textContent || '').replace(/^\[#?(\d+) .*?\]\s*/,'').trim();
+      return `[#${seq} ${ts}] ${speaker}${text}`.trim();
     })
     .filter((text) => text.length > 0);
 }
@@ -374,7 +397,7 @@ async function processQueue() {
           await sleep(backoff);
         }
       } else {
-        // Gemini: keep existing single-request per segment
+        // Gemini (HTTP): derive deltas and update UI incrementally
         let base64;
         try {
           base64 = await blobToBase64(segment);
@@ -390,11 +413,11 @@ async function processQueue() {
         });
         console.log('[SidePanel] Transcription result:', text);
         if (label === 'error') {
-          appendTranscript(`<span style="color:red;">${describeEngine(engineForRequest)} error. Backing off…</span>`);
+          appendTranscript(`<span style=\"color:red;\">${describeEngine(engineForRequest)} error. Backing off…</span>`);
           backoff = backoff ? Math.min(backoff * 2, MAX_BACKOFF_MS) : INITIAL_BACKOFF_MS;
           await sleep(backoff);
         } else {
-          if (text) appendTranscript(text);
+          if (text) handleGeminiUpdate(text);
           backoff = 0; // reset on success
           await sleep(MIN_GAP_BETWEEN_REQUESTS_MS);
         }
@@ -402,6 +425,109 @@ async function processQueue() {
     }
   } finally {
     isProcessing = false;
+  }
+}
+
+// Split text into an array of complete sentence strings and a leftover string (no terminal punctuation)
+function splitIntoSentences(text) {
+  const sentences = [];
+  let idx = 0;
+  const re = /([\s\S]*?[\.\!\?…]+)(\s+|$)/g; // greedy up to terminal punctuation
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const sentence = (m[1] || '').trim();
+    if (sentence) sentences.push(sentence);
+    idx = re.lastIndex;
+  }
+  const leftover = text.slice(idx).trim();
+  return { sentences, leftover };
+}
+
+function finalizeInterimAs(sentence, speaker = null) {
+  if (!geminiState.interimEl) return null;
+  try {
+    transcriptSequence += 1;
+    const ts = formatTimestamp();
+    const p = geminiState.interimEl;
+    p.dataset.role = 'final';
+    p.dataset.seq = String(transcriptSequence);
+    p.dataset.ts = ts;
+    p.dataset.transcript = sentence;
+    if (speaker) p.dataset.speaker = speaker;
+    p.style.fontWeight = 'normal';
+    p.style.color = '';
+    p.style.background = '';
+    p.style.padding = '';
+    p.style.borderRadius = '';
+    p.innerHTML = `<strong>[#${transcriptSequence} ${ts}]</strong> ${speaker ? speaker + ': ' : ''}${sentence}`;
+    lastFinalEl = p;
+    geminiState.interimEl = null;
+    geminiState.interimText = '';
+    updateDownloadButtonState();
+    return p;
+  } catch (e) {
+    console.warn('[SidePanel] finalizeInterimAs failed:', e);
+    return null;
+  }
+}
+
+// Handles a full-text transcript update from Gemini by appending only the delta
+// and showing the current trailing partial as an interim line.
+function handleGeminiUpdate(fullText) {
+  // Prefer simple monotonic growth assumption; if not, compute a safe prefix.
+  let baseLen = geminiState.totalFinalText.length;
+  if (fullText.length < baseLen || fullText.slice(0, baseLen) !== geminiState.totalFinalText) {
+    // Fallback: find longest common prefix
+    const max = Math.min(fullText.length, baseLen);
+    let i = 0;
+    while (i < max && fullText.charCodeAt(i) === geminiState.totalFinalText.charCodeAt(i)) i++;
+    baseLen = i;
+  }
+  const incoming = fullText.slice(baseLen);
+  if (!incoming) return; // no change
+
+  // If an interim exists and the new incoming begins with it, try to complete it first
+  let rest = incoming;
+  if (geminiState.interimEl && geminiState.interimText && incoming.startsWith(geminiState.interimText)) {
+    const candidate = incoming; // includes prior interim prefix
+    const { sentences, leftover } = splitIntoSentences(candidate);
+    if (sentences.length > 0) {
+      // First sentence completes the interim
+      const first = sentences[0];
+      finalizeInterimAs(first);
+      geminiState.totalFinalText = fullText.slice(0, baseLen) + first;
+      // Append any additional complete sentences after the first
+      for (let j = 1; j < sentences.length; j++) {
+        appendTranscript(sentences[j]);
+        geminiState.totalFinalText += sentences[j];
+      }
+      rest = leftover;
+    }
+  } else {
+    // No usable interim; append all complete sentences from incoming
+    const { sentences, leftover } = splitIntoSentences(incoming);
+    if (sentences.length > 0) {
+      sentences.forEach((s) => {
+        appendTranscript(s);
+        geminiState.totalFinalText += s;
+      });
+    }
+    rest = leftover;
+  }
+
+  // Update or create interim with the leftover (if any)
+  if (rest && rest.length > 0) {
+    if (!geminiState.interimEl) {
+      geminiState.interimEl = appendTranscript(rest, { isFinal: false });
+    } else {
+      geminiState.interimEl.dataset.transcript = rest;
+      geminiState.interimEl.textContent = rest;
+    }
+    geminiState.interimText = rest;
+  } else {
+    // No leftover; clear interim if present
+    geminiState.interimEl = null;
+    geminiState.interimText = '';
   }
 }
 
@@ -445,55 +571,80 @@ async function ensureWsConnected() {
         const data = typeof evt.data === 'string' ? JSON.parse(evt.data) : null;
         if (!data) return;
         const txt = typeof data.text === 'string' ? data.text.trim() : '';
-        if (data.type === 'final' && txt) {
-          // Convert the most recent partial into a final line if present; otherwise append as new final
-          if (livePartialEl && livePartialEl.parentNode) {
-            try {
-              // Assign numbering and timestamp, and restyle from partial -> final
-              transcriptSequence += 1;
-              const ts = formatTimestamp();
-              livePartialEl.dataset.role = 'final';
-              livePartialEl.dataset.seq = String(transcriptSequence);
-              livePartialEl.dataset.ts = ts;
-              // Reset styles from partial emphasis
-              livePartialEl.style.fontWeight = 'normal';
-              livePartialEl.style.color = '';
-              livePartialEl.style.background = '';
-              livePartialEl.style.padding = '';
-              livePartialEl.style.borderRadius = '';
-              // Update text with prefix and final content
-              livePartialEl.textContent = `[#${transcriptSequence} ${ts}] ${txt}`;
-            } catch (_) {
-              appendTranscript(txt, { isFinal: true });
-            }
+        const speaker = typeof data.speaker === 'string' ? data.speaker.trim() : null;
+        // PARTIAL (interim)
+        if (data.type === 'partial') {
+          if (!txt) return;
+          if (!livePartialEl) {
+            livePartialEl = appendTranscript(txt, { isFinal: false, speaker });
           } else {
-            appendTranscript(txt, { isFinal: true });
+            // Update existing interim line text
+            livePartialEl.dataset.transcript = txt;
+            if (speaker) livePartialEl.dataset.speaker = speaker;
+            livePartialEl.textContent = `${speaker ? speaker + ': ' : ''}${txt}`;
           }
-          livePartialEl = null;
-        } else if (data.type === 'partial' && txt) {
-          if (!transcriptDiv) return;
-          // Demote previous partial styling (if any)
-          if (livePartialEl) {
-            try {
-              livePartialEl.style.fontWeight = 'normal';
-              livePartialEl.style.color = '#333';
-              livePartialEl.style.background = 'transparent';
-              livePartialEl.style.padding = '';
-              livePartialEl.style.borderRadius = '';
-            } catch (_) {}
+          return;
+        }
+        // BOUNDARY (utterance_end): finalize current interim immediately
+        if (data.type === 'boundary' && data.event === 'utterance_end') {
+            if (livePartialEl && livePartialEl.parentNode) {
+              try {
+                transcriptSequence += 1;
+                const ts = formatTimestamp();
+                livePartialEl.dataset.role = 'final';
+                livePartialEl.dataset.seq = String(transcriptSequence);
+                livePartialEl.dataset.ts = ts;
+                if (speaker) livePartialEl.dataset.speaker = speaker;
+                const raw = livePartialEl.dataset.transcript || livePartialEl.textContent || '';
+                // Remove interim styling
+                livePartialEl.style.fontWeight = 'normal';
+                livePartialEl.style.color = '';
+                livePartialEl.style.background = '';
+                livePartialEl.style.padding = '';
+                livePartialEl.style.borderRadius = '';
+                livePartialEl.innerHTML = `<strong>[#${transcriptSequence} ${ts}]</strong> ${speaker ? speaker + ': ' : ''}${raw}`;
+                lastFinalEl = livePartialEl;
+              } catch (e) {
+                console.warn('[SidePanel] boundary finalize failed:', e);
+              }
+            }
+            livePartialEl = null;
+            updateDownloadButtonState();
+            return;
+        }
+        // FINAL: replace last final line content with improved text (if exists)
+        if (data.type === 'final' && txt) {
+          if (lastFinalEl && lastFinalEl.dataset && lastFinalEl.dataset.role === 'final') {
+            // Do not replace previous final; append a new final paragraph if text changed
+            const prev = (lastFinalEl.dataset.transcript || '').trim();
+            if (prev !== txt.trim()) {
+              appendTranscript(txt, { isFinal: true, speaker });
+            }
+          } else if (livePartialEl) {
+            // If we have an interim without boundary yet, finalize directly with final text
+            transcriptSequence += 1;
+            const ts = formatTimestamp();
+            livePartialEl.dataset.role = 'final';
+            livePartialEl.dataset.seq = String(transcriptSequence);
+            livePartialEl.dataset.ts = ts;
+            livePartialEl.dataset.transcript = txt;
+            if (speaker) livePartialEl.dataset.speaker = speaker;
+            livePartialEl.style.fontWeight = 'normal';
+            livePartialEl.style.color = '';
+            livePartialEl.style.background = '';
+            livePartialEl.style.padding = '';
+            livePartialEl.style.borderRadius = '';
+            livePartialEl.innerHTML = `<strong>[#${transcriptSequence} ${ts}]</strong> ${speaker ? speaker + ': ' : ''}${txt}`;
+            lastFinalEl = livePartialEl;
+            livePartialEl = null;
+          } else {
+            // No prior lines, just append new final
+            appendTranscript(txt, { isFinal: true, speaker });
           }
-          // Append a brand new partial line
-          const p = document.createElement('p');
-          p.dataset.role = 'partial';
-          p.style.fontWeight = 'bold';
-          p.style.color = '#000';
-          p.style.background = 'rgba(0,0,0,0.05)';
-          p.style.padding = '2px 4px';
-          p.style.borderRadius = '3px';
-          p.textContent = txt;
-          transcriptDiv.appendChild(p);
-          livePartialEl = p;
-        } else if (data.type === 'error') {
+          updateDownloadButtonState();
+          return;
+        }
+        if (data.type === 'error') {
           setStatus(`Stream error: ${data.error}`, 'error');
         }
       } catch (_) {}
@@ -597,6 +748,10 @@ function captureActiveTabAndStart() {
     mediaStream = null; tabStream = null; micStream = null;
   if (audioCtx) { try { audioCtx.close(); } catch (_) {} audioCtx = null; }
   } catch (_) {}
+  // Reset Gemini accumulation state for a fresh session
+  geminiState.totalFinalText = '';
+  geminiState.interimEl = null;
+  geminiState.interimText = '';
   if (!chrome?.tabCapture) {
     setStatus('tabCapture API not available. Are permissions set?', 'error');
     console.error('[SidePanel] chrome.tabCapture API not available in this context.');
@@ -799,6 +954,10 @@ if (stopBtn) {
       if (recorder) {
         recorder.stop();
         recorder = null;
+      }
+      // Finalize any pending interim line before tearing down
+      if (geminiState.interimEl && geminiState.interimText) {
+        try { finalizeInterimAs(geminiState.interimText); } catch (_) {}
       }
       // Close WS session if any
       try {

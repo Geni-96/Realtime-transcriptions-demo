@@ -48,6 +48,12 @@ const geminiState = {
   interimText: ''     // current interim text content
 };
 
+// State for WebSocket streaming (Faster Whisper) so we can append immediately
+// when partial text contains complete sentences and keep a bold interim.
+const wsState = {
+  committedInUtterance: '', // text already appended for the current utterance
+};
+
 // Batching & rate limiting to avoid API 500s/throttling
 // IMPORTANT: Do NOT use MediaRecorder timeslice. Instead, stop and recreate
 // the recorder every CHUNK_MS so each blob is a complete, standalone file
@@ -572,17 +578,38 @@ async function ensureWsConnected() {
         if (!data) return;
         const txt = typeof data.text === 'string' ? data.text.trim() : '';
         const speaker = typeof data.speaker === 'string' ? data.speaker.trim() : null;
-        // PARTIAL (interim)
+        // PARTIAL (interim): append any complete sentences immediately, keep trailing as bold
         if (data.type === 'partial') {
           if (!txt) return;
-          if (!livePartialEl) {
-            livePartialEl = appendTranscript(txt, { isFinal: false, speaker });
-          } else {
-            // Update existing interim line text
-            livePartialEl.dataset.transcript = txt;
-            if (speaker) livePartialEl.dataset.speaker = speaker;
-            livePartialEl.textContent = `${speaker ? speaker + ': ' : ''}${txt}`;
+          // Combine what we've already committed for this utterance with the new partial
+          const combined = wsState.committedInUtterance + txt;
+          const { sentences, leftover } = splitIntoSentences(combined);
+          // Append any new complete sentences beyond what we've already committed
+          let newlyCommitted = '';
+          const already = wsState.committedInUtterance;
+          const afterPrefix = combined.slice(already.length);
+          if (afterPrefix) {
+            const { sentences: addl, leftover: rem } = splitIntoSentences(afterPrefix);
+            addl.forEach((s) => appendTranscript(s, { isFinal: true, speaker }));
+            newlyCommitted = addl.join('');
           }
+          wsState.committedInUtterance += newlyCommitted;
+          // Update or create interim with leftover from the combined string
+          const finalLeftover = combined.slice(wsState.committedInUtterance.length);
+          if (finalLeftover) {
+            if (!livePartialEl) {
+              livePartialEl = appendTranscript(finalLeftover, { isFinal: false, speaker });
+            } else {
+              livePartialEl.dataset.transcript = finalLeftover;
+              if (speaker) livePartialEl.dataset.speaker = speaker;
+              livePartialEl.textContent = `${speaker ? speaker + ': ' : ''}${finalLeftover}`;
+            }
+          } else if (livePartialEl) {
+            // Nothing left; clear the interim line (it will be finalized when boundary arrives)
+            livePartialEl.remove();
+            livePartialEl = null;
+          }
+          updateDownloadButtonState();
           return;
         }
         // BOUNDARY (utterance_end): finalize current interim immediately
@@ -608,17 +635,26 @@ async function ensureWsConnected() {
                 console.warn('[SidePanel] boundary finalize failed:', e);
               }
             }
+            // Reset utterance state after boundary
             livePartialEl = null;
+            wsState.committedInUtterance = '';
             updateDownloadButtonState();
             return;
         }
-        // FINAL: replace last final line content with improved text (if exists)
+        // FINAL: do not replace prior lines. If final contains extra beyond what we appended, append the delta
         if (data.type === 'final' && txt) {
-          if (lastFinalEl && lastFinalEl.dataset && lastFinalEl.dataset.role === 'final') {
-            // Do not replace previous final; append a new final paragraph if text changed
-            const prev = (lastFinalEl.dataset.transcript || '').trim();
-            if (prev !== txt.trim()) {
-              appendTranscript(txt, { isFinal: true, speaker });
+          const currentSoFar = wsState.committedInUtterance + (livePartialEl?.dataset?.transcript || '');
+          if (txt.startsWith(currentSoFar)) {
+            const delta = txt.slice(currentSoFar.length);
+            if (delta) {
+              const { sentences, leftover } = splitIntoSentences(delta);
+              sentences.forEach((s) => appendTranscript(s, { isFinal: true, speaker }));
+              wsState.committedInUtterance += sentences.join('');
+              if (leftover && livePartialEl) {
+                livePartialEl.dataset.transcript = leftover;
+                if (speaker) livePartialEl.dataset.speaker = speaker;
+                livePartialEl.textContent = `${speaker ? speaker + ': ' : ''}${leftover}`;
+              }
             }
           } else if (livePartialEl) {
             // If we have an interim without boundary yet, finalize directly with final text
@@ -637,6 +673,7 @@ async function ensureWsConnected() {
             livePartialEl.innerHTML = `<strong>[#${transcriptSequence} ${ts}]</strong> ${speaker ? speaker + ': ' : ''}${txt}`;
             lastFinalEl = livePartialEl;
             livePartialEl = null;
+            wsState.committedInUtterance = '';
           } else {
             // No prior lines, just append new final
             appendTranscript(txt, { isFinal: true, speaker });
@@ -752,6 +789,8 @@ function captureActiveTabAndStart() {
   geminiState.totalFinalText = '';
   geminiState.interimEl = null;
   geminiState.interimText = '';
+    // Reset WS utterance state
+    wsState.committedInUtterance = '';
   if (!chrome?.tabCapture) {
     setStatus('tabCapture API not available. Are permissions set?', 'error');
     console.error('[SidePanel] chrome.tabCapture API not available in this context.');

@@ -51,7 +51,8 @@ const geminiState = {
 // State for WebSocket streaming (Faster Whisper) so we can append immediately
 // when partial text contains complete sentences and keep a bold interim.
 const wsState = {
-  committedInUtterance: '', // text already appended for the current utterance
+  committedInUtterance: '', // text already appended for the current utterance (deprecated in favor of nodes)
+  utteranceNodes: [] // array of <p> elements appended for this utterance
 };
 
 // Batching & rate limiting to avoid API 500s/throttling
@@ -590,7 +591,10 @@ async function ensureWsConnected() {
           const afterPrefix = combined.slice(already.length);
           if (afterPrefix) {
             const { sentences: addl, leftover: rem } = splitIntoSentences(afterPrefix);
-            addl.forEach((s) => appendTranscript(s, { isFinal: true, speaker }));
+            addl.forEach((s) => {
+              const el = appendTranscript(s, { isFinal: true, speaker });
+              if (el) wsState.utteranceNodes.push(el);
+            });
             newlyCommitted = addl.join('');
           }
           wsState.committedInUtterance += newlyCommitted;
@@ -631,31 +635,26 @@ async function ensureWsConnected() {
                 livePartialEl.style.borderRadius = '';
                 livePartialEl.innerHTML = `<strong>[#${transcriptSequence} ${ts}]</strong> ${speaker ? speaker + ': ' : ''}${raw}`;
                 lastFinalEl = livePartialEl;
+                // Track finalized interim as part of current utterance
+                wsState.utteranceNodes.push(livePartialEl);
               } catch (e) {
                 console.warn('[SidePanel] boundary finalize failed:', e);
               }
             }
             // Reset utterance state after boundary
             livePartialEl = null;
-            wsState.committedInUtterance = '';
+            // Don't reset wsState here; wait for the final to reconcile. It prevents duplicates.
             updateDownloadButtonState();
             return;
         }
-        // FINAL: do not replace prior lines. If final contains extra beyond what we appended, append the delta
+        // FINAL: reconcile to the final text. Replace existing utterance nodes instead of appending duplicates.
         if (data.type === 'final' && txt) {
-          const currentSoFar = wsState.committedInUtterance + (livePartialEl?.dataset?.transcript || '');
-          if (txt.startsWith(currentSoFar)) {
-            const delta = txt.slice(currentSoFar.length);
-            if (delta) {
-              const { sentences, leftover } = splitIntoSentences(delta);
-              sentences.forEach((s) => appendTranscript(s, { isFinal: true, speaker }));
-              wsState.committedInUtterance += sentences.join('');
-              if (leftover && livePartialEl) {
-                livePartialEl.dataset.transcript = leftover;
-                if (speaker) livePartialEl.dataset.speaker = speaker;
-                livePartialEl.textContent = `${speaker ? speaker + ': ' : ''}${leftover}`;
-              }
-            }
+          const currentSoFarFromNodes = wsState.utteranceNodes
+            .map((el) => el?.dataset?.transcript || '')
+            .join('')
+            + (livePartialEl?.dataset?.transcript || '');
+          if (txt === currentSoFarFromNodes) {
+            // Already reflected; nothing to do
           } else if (livePartialEl) {
             // If we have an interim without boundary yet, finalize directly with final text
             transcriptSequence += 1;
@@ -672,13 +671,43 @@ async function ensureWsConnected() {
             livePartialEl.style.borderRadius = '';
             livePartialEl.innerHTML = `<strong>[#${transcriptSequence} ${ts}]</strong> ${speaker ? speaker + ': ' : ''}${txt}`;
             lastFinalEl = livePartialEl;
+            // Replace all prior utterance nodes with this single finalized one
+            try {
+              wsState.utteranceNodes.forEach((node) => { if (node !== livePartialEl) node.remove(); });
+            } catch (_) {}
+            wsState.utteranceNodes = [livePartialEl];
             livePartialEl = null;
-            wsState.committedInUtterance = '';
           } else {
-            // No prior lines, just append new final
-            appendTranscript(txt, { isFinal: true, speaker });
+            // No interim: reconcile existing utterance nodes to match final txt by sentences
+            const { sentences } = splitIntoSentences(txt);
+            const nodes = wsState.utteranceNodes;
+            const count = Math.max(sentences.length, nodes.length);
+            for (let i = 0; i < count; i++) {
+              const s = sentences[i];
+              const node = nodes[i];
+              if (s && node) {
+                // Update existing node text in-place
+                node.dataset.transcript = s;
+                const seq = node.dataset.seq || (node.dataset.seq = String(++transcriptSequence));
+                const ts = node.dataset.ts || (node.dataset.ts = formatTimestamp());
+                if (speaker) node.dataset.speaker = speaker;
+                node.innerHTML = `<strong>[#${seq} ${ts}]</strong> ${speaker ? speaker + ': ' : ''}${s}`;
+              } else if (s && !node) {
+                // Need an extra node
+                const el = appendTranscript(s, { isFinal: true, speaker });
+                if (el) nodes.push(el);
+              } else if (!s && node) {
+                // Remove excess node
+                try { node.remove(); } catch (_) {}
+              }
+            }
+            // Trim nodes array to the sentences length
+            wsState.utteranceNodes = nodes.slice(0, sentences.length);
           }
           updateDownloadButtonState();
+          // Reset utterance tracking for next utterance
+          wsState.committedInUtterance = '';
+          wsState.utteranceNodes = [];
           return;
         }
         if (data.type === 'error') {

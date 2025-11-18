@@ -39,6 +39,10 @@ let livePartialEl = null; // current interim (partial) line
 let lastFinalEl = null;   // last finalized line for potential replacement by 'final'
 let transcriptSequence = 0; // counts final transcripts
 
+// Separate log for cleaned finals that arrive from the backend.
+// This is used exclusively for downloads; the side panel remains a live view.
+const finalsLog = [];
+
 // Accumulator for non-streaming (Gemini HTTP) responses that may return
 // the full conversation so far. We derive deltas, append completed sentences,
 // and keep an interim line for the current incomplete sentence.
@@ -52,7 +56,8 @@ const geminiState = {
 // when partial text contains complete sentences and keep a bold interim.
 const wsState = {
   committedInUtterance: '', // text already appended for the current utterance (deprecated in favor of nodes)
-  utteranceNodes: [] // array of <p> elements appended for this utterance
+  utteranceNodes: [], // array of <p> elements appended for the current (open) utterance
+  lastClosedUtteranceNodes: [] // nodes from the most recently closed utterance (awaiting potential 'final')
 };
 
 // Batching & rate limiting to avoid API 500s/throttling
@@ -187,12 +192,12 @@ function collectTranscriptLines() {
 
 function updateDownloadButtonState() {
   if (!downloadBtn) return;
-  const hasContent = collectTranscriptLines().length > 0;
+  const hasContent = finalsLog.length > 0;
   downloadBtn.disabled = !hasContent;
 }
 
 function triggerTranscriptDownload() {
-  const lines = collectTranscriptLines();
+  const lines = finalsLog.slice();
   if (lines.length === 0) {
     setStatus('No transcript available to download yet.', 'warn');
     return;
@@ -202,7 +207,7 @@ function triggerTranscriptDownload() {
     const blob = new Blob([plainText], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
-    const fileName = `transcript-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
+    const fileName = `final-transcript-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
     anchor.href = url;
     anchor.download = fileName;
     document.body.appendChild(anchor);
@@ -213,6 +218,16 @@ function triggerTranscriptDownload() {
   } catch (err) {
     console.error('[SidePanel] Failed to download transcript:', err);
     setStatus('Unable to download transcript. See console.', 'error');
+  }
+}
+
+function appendFinalForDownload(text, speaker = null) {
+  try {
+    const ts = formatTimestamp();
+    const line = `[${ts}] ${speaker ? speaker + ': ' : ''}${text}`.trim();
+    finalsLog.push(line);
+  } catch (e) {
+    console.warn('[SidePanel] appendFinalForDownload failed:', e);
   }
 }
 
@@ -582,8 +597,23 @@ async function ensureWsConnected() {
         // PARTIAL (interim): append any complete sentences immediately, keep trailing as bold
         if (data.type === 'partial') {
           if (!txt) return;
-          // Combine what we've already committed for this utterance with the new partial
-          const combined = wsState.committedInUtterance + txt;
+          // Combine previously committed + prior interim (if any) + new partial.
+          // This handles engines that send cumulative partials and those that send deltas.
+          const prevInterim = (livePartialEl && livePartialEl.dataset && livePartialEl.dataset.transcript) ? livePartialEl.dataset.transcript : '';
+          let effectivePartial = txt;
+          if (prevInterim) {
+            if (txt.startsWith(prevInterim)) {
+              // Cumulative partial growth; use the newer full text
+              effectivePartial = txt;
+            } else if (prevInterim.startsWith(txt)) {
+              // Engine rewound/truncated; keep the longer interim to avoid losing text
+              effectivePartial = prevInterim;
+            } else {
+              // Likely delta; append to the previous interim with spacing
+              effectivePartial = (prevInterim + ' ' + txt).replace(/\s+/g, ' ').trim();
+            }
+          }
+          const combined = wsState.committedInUtterance + effectivePartial;
           const { sentences, leftover } = splitIntoSentences(combined);
           // Append any new complete sentences beyond what we've already committed
           let newlyCommitted = '';
@@ -641,73 +671,18 @@ async function ensureWsConnected() {
                 console.warn('[SidePanel] boundary finalize failed:', e);
               }
             }
-            // Reset utterance state after boundary
+            // Close current utterance: move nodes to lastClosed and clear current state
             livePartialEl = null;
-            // Don't reset wsState here; wait for the final to reconcile. It prevents duplicates.
+            wsState.lastClosedUtteranceNodes = wsState.utteranceNodes.slice();
+            wsState.utteranceNodes = [];
+            wsState.committedInUtterance = '';
             updateDownloadButtonState();
             return;
         }
-        // FINAL: reconcile to the final text. Replace existing utterance nodes instead of appending duplicates.
+        // FINAL: do not modify the panel; only append to finals log for download
         if (data.type === 'final' && txt) {
-          const currentSoFarFromNodes = wsState.utteranceNodes
-            .map((el) => el?.dataset?.transcript || '')
-            .join('')
-            + (livePartialEl?.dataset?.transcript || '');
-          if (txt === currentSoFarFromNodes) {
-            // Already reflected; nothing to do
-          } else if (livePartialEl) {
-            // If we have an interim without boundary yet, finalize directly with final text
-            transcriptSequence += 1;
-            const ts = formatTimestamp();
-            livePartialEl.dataset.role = 'final';
-            livePartialEl.dataset.seq = String(transcriptSequence);
-            livePartialEl.dataset.ts = ts;
-            livePartialEl.dataset.transcript = txt;
-            if (speaker) livePartialEl.dataset.speaker = speaker;
-            livePartialEl.style.fontWeight = 'normal';
-            livePartialEl.style.color = '';
-            livePartialEl.style.background = '';
-            livePartialEl.style.padding = '';
-            livePartialEl.style.borderRadius = '';
-            livePartialEl.innerHTML = `<strong>[#${transcriptSequence} ${ts}]</strong> ${speaker ? speaker + ': ' : ''}${txt}`;
-            lastFinalEl = livePartialEl;
-            // Replace all prior utterance nodes with this single finalized one
-            try {
-              wsState.utteranceNodes.forEach((node) => { if (node !== livePartialEl) node.remove(); });
-            } catch (_) {}
-            wsState.utteranceNodes = [livePartialEl];
-            livePartialEl = null;
-          } else {
-            // No interim: reconcile existing utterance nodes to match final txt by sentences
-            const { sentences } = splitIntoSentences(txt);
-            const nodes = wsState.utteranceNodes;
-            const count = Math.max(sentences.length, nodes.length);
-            for (let i = 0; i < count; i++) {
-              const s = sentences[i];
-              const node = nodes[i];
-              if (s && node) {
-                // Update existing node text in-place
-                node.dataset.transcript = s;
-                const seq = node.dataset.seq || (node.dataset.seq = String(++transcriptSequence));
-                const ts = node.dataset.ts || (node.dataset.ts = formatTimestamp());
-                if (speaker) node.dataset.speaker = speaker;
-                node.innerHTML = `<strong>[#${seq} ${ts}]</strong> ${speaker ? speaker + ': ' : ''}${s}`;
-              } else if (s && !node) {
-                // Need an extra node
-                const el = appendTranscript(s, { isFinal: true, speaker });
-                if (el) nodes.push(el);
-              } else if (!s && node) {
-                // Remove excess node
-                try { node.remove(); } catch (_) {}
-              }
-            }
-            // Trim nodes array to the sentences length
-            wsState.utteranceNodes = nodes.slice(0, sentences.length);
-          }
+          appendFinalForDownload(txt, speaker);
           updateDownloadButtonState();
-          // Reset utterance tracking for next utterance
-          wsState.committedInUtterance = '';
-          wsState.utteranceNodes = [];
           return;
         }
         if (data.type === 'error') {
@@ -818,8 +793,12 @@ function captureActiveTabAndStart() {
   geminiState.totalFinalText = '';
   geminiState.interimEl = null;
   geminiState.interimText = '';
+    // Reset finals log for a fresh download file per session
+    finalsLog.length = 0;
+    updateDownloadButtonState();
     // Reset WS utterance state
     wsState.committedInUtterance = '';
+  wsState.utteranceNodes = [];
   if (!chrome?.tabCapture) {
     setStatus('tabCapture API not available. Are permissions set?', 'error');
     console.error('[SidePanel] chrome.tabCapture API not available in this context.');
